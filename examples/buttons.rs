@@ -12,15 +12,18 @@ use std::rc::Rc;
 use fluent_win::backdrop;
 use fluent_win::button::{Button, FocusKind, Input, Key};
 use fluent_win::check_box::{CheckBox, CheckState};
+use fluent_win::flyout;
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::panel::{Control, Event, Formats, Outcome, Panel};
 use fluent_win::slider::{self, Slider};
 use fluent_win::theme::Theme;
 use fluent_win::toggle_switch::ToggleSwitch;
 use fluent_win::uia::{self, WM_UIA_FOCUS, WM_UIA_INVOKE, WM_UIA_SET_VALUE};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
-use windows::Win32::Graphics::Gdi::ValidateRect;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
+use windows::Win32::Graphics::Gdi::{
+    ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, ValidateRect,
+};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Variant::VARIANT;
@@ -37,7 +40,7 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
     VIRTUAL_KEY, VK_ADD, VK_DOWN, VK_END, VK_HOME, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
-    VK_SUBTRACT, VK_TAB, VK_UP,
+    VK_ESCAPE, VK_SUBTRACT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
@@ -45,7 +48,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SPI_SETHIGHCONTRAST, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_CAPTURECHANGED,
     WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE,
-    WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW, WS_VISIBLE, DestroyWindow, SW_SHOW,
+    SWP_NOSIZE, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, Result, w};
 
@@ -63,6 +67,26 @@ struct App {
     uia: uia::Shared,
     /// UIA events to raise once the APP borrow ends (see `with_app`).
     pending: Vec<(usize, UiaEvent)>,
+    /// The open "Mais opções" flyout, if any.
+    popup: Option<Popup>,
+}
+
+/// Label of the button that opens the flyout.
+const MORE: &str = "Mais opções";
+
+/// A flyout: its own popup window (acrylic backdrop), surface and controls.
+struct Popup {
+    hwnd: HWND,
+    surface: Surface,
+    panel: Panel,
+    /// Size in DIPs.
+    size: (f32, f32),
+    /// Final top-left in screen pixels; the transition offsets it.
+    origin: (i32, i32),
+    transition: flyout::Transition,
+    closing: bool,
+    /// True when the DWM acrylic backdrop is active (else the fallback color fills).
+    backdrop: bool,
 }
 
 /// A UIA notification queued until the APP borrow ends.
@@ -131,6 +155,9 @@ impl App {
                 Event::Invoked(i) => {
                     self.status = format!("Clicou: {}", self.panel.controls[i].name());
                     self.raise(i, UiaEvent::Event(UIA_Invoke_InvokedEventId));
+                    if self.panel.controls[i].name() == MORE {
+                        self.open_flyout(i)?;
+                    }
                 }
                 // Toggle controls raise ToggleState changed, not Invoked (their peers have no Invoke).
                 Event::Toggled { index, old, new } => {
@@ -157,6 +184,132 @@ impl App {
         Ok(())
     }
 
+    /// Opens the flyout under control `anchor` (`FlyoutPlacementMode.Bottom`).
+    fn open_flyout(&mut self, anchor: usize) -> Result<()> {
+        if self.popup.is_some() {
+            return Ok(());
+        }
+        let k = self.surface.scale();
+        let a = self.panel.controls[anchor].rect();
+        let mut o = POINT::default();
+        let work = unsafe {
+            _ = ClientToScreen(self.hwnd, &mut o);
+            let monitor = MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            _ = GetMonitorInfoW(monitor, &mut info);
+            info.rcWork
+        };
+        let (ox, oy) = (o.x as f32 / k, o.y as f32 / k);
+        let target = rect(ox + a.left, oy + a.top, ox + a.right, oy + a.bottom);
+        let container = rect(work.left as f32 / k, work.top as f32 / k, work.right as f32 / k, work.bottom as f32 / k);
+        // Content inside FlyoutContentPadding: a ToggleSwitch and a Slider.
+        let (pl, pt, pr, pb) = flyout::PADDING;
+        let switch = ToggleSwitch::layout(&self.surface, &self.formats.switch, "Luz noturna", "Ativado", "Desativado", pl, pt, false)?;
+        let inner = (switch.rect.right - switch.rect.left).max(248.0);
+        let top = switch.rect.bottom + GAP;
+        let slider = Slider::new("Brilho", rect(pl, top, pl + inner, top + slider::HEIGHT), 0.0, 100.0, 70.0);
+        let (w, h) = (
+            (pl + inner + pr).clamp(flyout::WIDTH_RANGE.0, flyout::WIDTH_RANGE.1),
+            (top + slider::HEIGHT + pb).clamp(flyout::HEIGHT_RANGE.0, flyout::HEIGHT_RANGE.1),
+        );
+        let (r, placement) = flyout::place(target, w, h, container, flyout::Placement::Bottom);
+        let origin = ((r.left * k).round() as i32, (r.top * k).round() as i32);
+        let hwnd = unsafe {
+            CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST, w!("fluent-win-flyout"),
+                w!("Mais opções"), WS_POPUP, origin.0, origin.1, (w * k).round() as i32, (h * k).round() as i32,
+                Some(self.hwnd), None, None, None)?
+        };
+        let backdrop = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, self.theme.dark).is_ok();
+        let surface = Surface::new(hwnd)?;
+        self.popup = Some(Popup {
+            hwnd, surface, panel: Panel::new(vec![Box::new(switch), Box::new(slider)]), size: (w, h), origin,
+            transition: flyout::Transition::open(placement), closing: false, backdrop,
+        });
+        unsafe { _ = ShowWindow(hwnd, SW_SHOW) };
+        self.frame_popup()
+    }
+
+    /// Positions and draws the flyout for the current transition frame; destroys
+    /// it once the close fade ends.
+    fn frame_popup(&mut self) -> Result<()> {
+        let Some(p) = self.popup.as_mut() else { return Ok(()) };
+        let f = p.transition.now();
+        if p.closing && !f.running {
+            let hwnd = p.hwnd;
+            self.popup = None;
+            return unsafe { DestroyWindow(hwnd) };
+        }
+        let k = p.surface.scale();
+        let (x, y) = (p.origin.0 + (f.offset.0 * k).round() as i32, p.origin.1 + (f.offset.1 * k).round() as i32);
+        unsafe { SetWindowPos(p.hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)? };
+        let style = flyout::style(&self.theme, p.backdrop);
+        let Popup { surface, panel, size, .. } = p;
+        surface.begin();
+        surface.with_opacity(f.opacity, |s| {
+            flyout::draw_chrome(s, &style, *size);
+            panel.draw(s, &self.theme, &self.formats)
+        })?;
+        surface.end()
+    }
+
+    /// Light dismiss / Esc: starts the close fade.
+    fn close_popup(&mut self) {
+        if let Some(p) = self.popup.as_mut().filter(|p| !p.closing) {
+            p.closing = true;
+            p.transition = flyout::Transition::close();
+        }
+    }
+
+    fn popup_animating(&self) -> bool {
+        self.popup.as_ref().is_some_and(|p| p.closing || p.transition.now().running || p.panel.animating())
+    }
+
+    /// Routes input to the flyout's controls and shows their changes in the status line.
+    fn popup_input(&mut self, input: Input) -> Result<()> {
+        let Some(p) = self.popup.as_mut() else { return Ok(()) };
+        let out = p.panel.handle(input);
+        match out.capture {
+            Some(true) => unsafe { _ = SetCapture(p.hwnd) },
+            Some(false) => unsafe { ReleaseCapture()? },
+            None => {}
+        }
+        let mut status = None;
+        for event in &out.events {
+            match *event {
+                Event::Toggled { index, new, .. } => {
+                    let state = if new == ToggleState_On { "ligado" } else { "desligado" };
+                    status = Some(format!("{}: {state}", p.panel.controls[index].name()));
+                }
+                Event::ValueChanged { index, new, .. } => status = Some(format!("{}: {new}", p.panel.controls[index].name())),
+                _ => {}
+            }
+        }
+        if out.redraw {
+            self.frame_popup()?;
+        }
+        if let Some(status) = status {
+            self.status = status;
+            self.render()?;
+        }
+        Ok(())
+    }
+
+    fn popup_key(&mut self, vk: VIRTUAL_KEY, down: bool) -> Result<()> {
+        if down && vk == VK_ESCAPE {
+            self.close_popup();
+            return Ok(());
+        }
+        let Some(p) = self.popup.as_mut() else { return Ok(()) };
+        if down && vk == VK_TAB {
+            let back = unsafe { GetKeyState(i32::from(VK_SHIFT.0)) } < 0;
+            if p.panel.tab(back).redraw {
+                self.frame_popup()?;
+            }
+            return Ok(());
+        }
+        self.popup_input(if down { Input::KeyDown(key_of(vk)) } else { Input::KeyUp(key_of(vk)) })
+    }
+
     fn input(&mut self, input: Input) -> Result<()> {
         let out = self.panel.handle(input);
         self.apply(out)
@@ -168,22 +321,65 @@ impl App {
             let out = self.panel.tab(back);
             return self.apply(out);
         }
-        let key = match vk {
-            VK_SPACE => Key::Space,
-            VK_RETURN => Key::Enter,
-            VK_ADD => Key::Add,
-            VK_SUBTRACT => Key::Subtract,
-            VK_LEFT => Key::Left,
-            VK_RIGHT => Key::Right,
-            VK_UP => Key::Up,
-            VK_DOWN => Key::Down,
-            VK_HOME => Key::Home,
-            VK_END => Key::End,
-            _ => Key::Other,
-        };
-        let out = self.panel.key(key, down);
+        let out = self.panel.key(key_of(vk), down);
         self.apply(out)
     }
+}
+
+/// The control key for a virtual key.
+fn key_of(vk: VIRTUAL_KEY) -> Key {
+    match vk {
+        VK_SPACE => Key::Space,
+        VK_RETURN => Key::Enter,
+        VK_ADD => Key::Add,
+        VK_SUBTRACT => Key::Subtract,
+        VK_LEFT => Key::Left,
+        VK_RIGHT => Key::Right,
+        VK_UP => Key::Up,
+        VK_DOWN => Key::Down,
+        VK_HOME => Key::Home,
+        VK_END => Key::End,
+        _ => Key::Other,
+    }
+}
+
+/// Window procedure of the flyout popup.
+extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let point = |a: &App| {
+        let k = a.popup.as_ref().map_or(1.0, |p| p.surface.scale());
+        (f32::from(loword(lp.0)) / k, f32::from(hiword(lp.0)) / k)
+    };
+    match msg {
+        WM_PAINT => {
+            unsafe { _ = ValidateRect(Some(hwnd), None) };
+            with_app(App::frame_popup);
+        }
+        // Light dismiss: losing activation (a click elsewhere) closes the flyout.
+        WM_ACTIVATE if u32::from(loword(wp.0 as isize) as u16) == WA_INACTIVE => with_app(|a| {
+            a.close_popup();
+            Ok(())
+        }),
+        WM_MOUSEMOVE => with_app(|a| {
+            let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
+            unsafe { TrackMouseEvent(&mut tme)? };
+            let (x, y) = point(a);
+            a.popup_input(Input::PointerMove(x, y))
+        }),
+        WM_MOUSELEAVE => with_app(|a| a.popup_input(Input::PointerLeave)),
+        WM_LBUTTONDOWN => with_app(|a| {
+            let (x, y) = point(a);
+            a.popup_input(Input::PointerDown(x, y))
+        }),
+        WM_LBUTTONUP => with_app(|a| {
+            let (x, y) = point(a);
+            a.popup_input(Input::PointerUp(x, y))
+        }),
+        WM_KEYDOWN => with_app(|a| a.popup_key(VIRTUAL_KEY(wp.0 as u16), true)),
+        WM_KEYUP => with_app(|a| a.popup_key(VIRTUAL_KEY(wp.0 as u16), false)),
+        WM_CAPTURECHANGED if lp.0 != hwnd.0 as isize => with_app(|a| a.popup_input(Input::CaptureLost)),
+        _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+    }
+    LRESULT(0)
 }
 
 /// Runs `f` on the app, then raises the UIA events it queued outside the borrow.
@@ -407,6 +603,10 @@ fn controls(surface: &Surface, f: &Formats) -> Result<Vec<Box<dyn Control>>> {
     let x = PAD + w + GAP;
     let (w, h) = Button::desired_size(surface, &f.label, "Iniciar")?;
     controls.push(Box::new(Button::subtle("Iniciar", rect(x, top, x + w, top + h))));
+    // Opens a Flyout below itself.
+    let x = x + w + GAP;
+    let (w, h) = Button::desired_size(surface, &f.label, MORE)?;
+    controls.push(Box::new(Button::new(MORE, rect(x, top, x + w, top + h), false)));
     // Third row: a ToggleSwitch with header (Settings style) and two CheckBoxes
     // centered on the switch row, the second one three-state.
     let top = top + h + GAP;
@@ -444,6 +644,13 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(wndproc),
             ..Default::default()
         });
+        RegisterClassW(&WNDCLASSW {
+            hCursor: LoadCursorW(None, IDC_ARROW)?,
+            hInstance: instance.into(),
+            lpszClassName: w!("fluent-win-flyout"),
+            lpfnWndProc: Some(popup_proc),
+            ..Default::default()
+        });
         let k = GetDpiForSystem() as f32 / 96.0;
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Button"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -463,6 +670,7 @@ fn main() -> Result<()> {
             tracking: false,
             uia: Rc::new(RefCell::new(uia::Model::default())),
             pending: Vec::new(),
+            popup: None,
         };
         UIA.with(|u| *u.borrow_mut() = Some(app.uia.clone()));
         app.render()?;
@@ -484,12 +692,15 @@ fn message_loop() -> Result<()> {
         loop {
             let mut animating = false;
             with_app(|a| {
-                animating = a.panel.animating();
+                animating = a.panel.animating() || a.popup_animating();
                 Ok(())
             });
             if animating || was_animating {
                 // Last frame after a transition lands exactly on its target color.
-                with_app(App::render);
+                with_app(|a| {
+                    a.render()?;
+                    a.frame_popup()
+                });
             }
             was_animating = animating;
             if animating {

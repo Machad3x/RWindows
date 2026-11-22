@@ -10,6 +10,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
     D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_CLAMP,
     D2D1_GAMMA_2_2, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
@@ -46,7 +47,9 @@ use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{Error, Interface, Result, w};
-use windows_numerics::Vector2;
+use std::mem::ManuallyDrop;
+
+use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::theme::{self, Ramp};
 
@@ -310,6 +313,26 @@ impl Surface {
         Ok(())
     }
 
+    /// Draws whatever `f` draws at `opacity` (a D2D layer), e.g. a fading flyout.
+    pub fn with_opacity(&self, opacity: f32, f: impl FnOnce(&Self) -> Result<()>) -> Result<()> {
+        if opacity >= 1.0 {
+            return f(self);
+        }
+        let params = D2D1_LAYER_PARAMETERS1 {
+            contentBounds: rect(-f32::MAX, -f32::MAX, f32::MAX, f32::MAX),
+            geometricMask: ManuallyDrop::new(None),
+            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            maskTransform: Matrix3x2::identity(),
+            opacity: opacity.max(0.0),
+            opacityBrush: ManuallyDrop::new(None),
+            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+        };
+        unsafe { self.ctx.PushLayer(&params, None) };
+        let drawn = f(self);
+        unsafe { self.ctx.PopLayer() };
+        drawn
+    }
+
     /// Draws `text` laid out inside `rect` (no heap allocation for short labels).
     // shortcut: DrawText lays the text out on every call; cache IDWriteTextLayout per label if profiling shows it.
     pub fn text(&self, text: &str, format: &IDWriteTextFormat, rect: D2D_RECT_F, color: D2D1_COLOR_F) {
@@ -503,6 +526,20 @@ mod tests {
             exists
         };
         assert!(exists.as_bool());
+    }
+
+    #[test]
+    fn with_opacity_should_run_the_drawing_inside_a_layer_and_end_the_frame() {
+        let mut surface = Surface::new(hidden_window()).unwrap();
+        surface.begin();
+        let mut ran = false;
+        surface.with_opacity(0.5, |s| {
+            s.fill_round(rect(0.0, 0.0, 10.0, 10.0), 2.0, theme::argb(0xFFFFFFFF));
+            ran = true;
+            Ok(())
+        }).unwrap();
+        // An unbalanced PushLayer would make EndDraw fail.
+        assert!(ran && surface.end().is_ok());
     }
 
     #[test]
