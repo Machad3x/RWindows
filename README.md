@@ -91,6 +91,23 @@ Pendente: provider de UI Automation (leitores de tela), alto contraste, `Animate
 
 Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As regras de press e release vêm do padrão confirmado em `OnPointerMoved` e `KeyUp`.
 
+## UI Automation
+
+`uia` expõe controles desenhados à mão para leitores de tela (Narrador, NVDA) e ferramentas de teste. A janela devolve uma raiz de fragmento no `WM_GETOBJECT` (`UiaRootObjectId`), e cada controle é um fragmento filho do tipo Button com o padrão Invoke.
+
+| Decisão | Motivo | Fonte |
+|---|---|---|
+| Providers leem um `Model` compartilhado (`Rc<RefCell>`) que o app atualiza | Uma chamada do UIA nunca disputa o borrow do app | — |
+| `ProviderOptions_ServerSideProvider \| UseComThreading`, thread de UI em STA | As chamadas chegam na própria thread de UI, sem lock | [ProviderOptions](https://learn.microsoft.com/windows/win32/api/uiautomationcore/ne-uiautomationcore-provideroptions) |
+| `Invoke` e `SetFocus` postam `WM_UIA_INVOKE`/`WM_UIA_FOCUS` | `Invoke` precisa voltar na hora, sem bloquear | [IInvokeProvider::Invoke](https://learn.microsoft.com/windows/win32/api/uiautomationcore/nf-uiautomationcore-iinvokeprovider-invoke) |
+| Raiz: host via `UiaHostProviderFromHwnd`, runtime id NULL, só navega para os filhos | O provider da janela cuida de pai, irmãos e nome | [Navigate](https://learn.microsoft.com/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-navigate), [GetRuntimeId](https://learn.microsoft.com/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-getruntimeid) |
+| Filho: Button, Name, AutomationId único (`button-N`), IsEnabled, IsKeyboardFocusable, HasKeyboardFocus, IsControl/ContentElement | Requisitos do tipo Button | [Button control type](https://learn.microsoft.com/windows/win32/winauto/uiauto-supportbuttoncontroltype) |
+| `BoundingRectangle` em pixels de tela, sem recorte | Exigido pela API | [BoundingRectangle](https://learn.microsoft.com/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-get_boundingrectangle) |
+| Invoke/SetFocus desabilitado → `UIA_E_ELEMENTNOTENABLED`; controle removido → `UIA_E_ELEMENTNOTAVAILABLE` | A página de `Invoke` só diz "HRESULT"; o código vem da tabela de erros do UIA | [UIA error codes](https://learn.microsoft.com/windows/win32/winauto/uiauto-error-codes) |
+| Dependência direta `windows-core` 0.62.2 | O `#[implement]` gera caminhos `::windows_core`; já estava na árvore | `Cargo.lock` |
+
+Testes: 16 com objetos COM reais numa janela oculta (navegação, propriedades, pixels de tela, hit test, foco, runtime ids, Invoke assíncrono e desabilitado, elemento removido).
+
 ## Tipografia
 
 Altura de linha natural medida pelo teste `every_ramp_step_should_have_a_natural_line_taller_than_its_size` (`cargo test -- --nocapture`), comparada com a especificação de design:

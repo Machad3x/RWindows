@@ -6,6 +6,7 @@
 //!   so transparent pixels show the DWM backdrop.
 //! - [`theme`]: WinUI color tokens, type ramp, corner radii, system accent.
 //! - [`easing`]: Win11 motion curves and durations.
+//! - [`uia`]: UI Automation providers for custom-drawn controls.
 #![deny(missing_docs)]
 
 pub mod backdrop;
@@ -13,3 +14,4 @@ pub mod button;
 pub mod easing;
 pub mod gfx;
 pub mod theme;
+pub mod uia;
