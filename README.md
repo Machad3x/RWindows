@@ -2,6 +2,8 @@
 
 Visual do Windows 11 (Fluent) para janelas Win32 puras em Rust. A meta é imitar o Win11 à risca, com o mínimo de RAM e CPU.
 
+**Objetivo do projeto: substituir o `explorer.exe` como shell do Windows 11.** O plano por fases, o que já funciona e o que falta estão no [ROADMAP.md](ROADMAP.md).
+
 É a camada visual que falta para shells como o [WinRust](https://github.com/Lemxy/WinRust), que usa GDI+ e por isso não tem antialiasing bom, Mica nem tipografia Segoe UI Variable.
 
 ## Uso
@@ -24,12 +26,19 @@ surface.end()?;
 
 ## Arquitetura
 
-| Módulo     | Função                                                                                                                                     |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `backdrop` | Mica/Acrylic, cantos arredondados e barra de título escura via DWM (`DwmSetWindowAttribute`)                                               |
-| `gfx`      | Direct2D + DirectWrite sobre um swap chain de DirectComposition com alfa pré-multiplicado. Pixels transparentes mostram o backdrop do DWM. |
-| `theme`    | Tokens de cor do WinUI, type ramp, raios de canto e acento do sistema                                                                      |
-| `easing`   | Curvas e durações de animação do Win11, mais um `Tween`                                                                                    |
+| Módulo | Função |
+|---|---|
+| `backdrop` | Mica/Acrylic, cantos arredondados e barra de título escura via DWM (`DwmSetWindowAttribute`) |
+| `gfx` | Direct2D + DirectWrite sobre um swap chain de DirectComposition com alfa pré-multiplicado; texto, bordas de elevação, camadas de opacidade, recuperação de GPU perdida |
+| `theme` | Tokens de cor do WinUI, type ramp, raios de canto, acento do sistema e alto contraste |
+| `easing` | Curvas e durações de animação do Win11, mais um `Tween` |
+| `button` | Button do WinUI (padrão, accent, subtle, ToggleButton) e a máquina de entrada que os outros controles reaproveitam |
+| `check_box` | CheckBox com dois ou três estados |
+| `toggle_switch` | ToggleSwitch com arraste |
+| `slider` | Slider horizontal |
+| `flyout` | Posicionamento, animação de abrir/fechar e aparência do Flyout |
+| `panel` | Roteamento comum: foco, captura, Tab, eventos (`trait Control`) |
+| `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, e eventos de propriedade |
 
 Única dependência: o crate `windows`. Não usa framework, webview nem GPUI.
 
@@ -320,6 +329,9 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 - [x] Eventos UIA de BoundingRectangle (troca de DPI) e ToggleState; IsEnabled não muda em tempo de execução no exemplo
 - [x] Narrador: com o `buttons` aberto, Tab por todos os controles e Espaço nos de alternar funcionaram (relato do usuário, 2026-11-22; sem transcrição da fala). NVDA não testado
 - [x] Texto sem alocação no heap por frame: rótulos de até 128 unidades UTF-16 são codificados na pilha (`with_wide`); só textos maiores alocam
+- [x] Slider, CheckBox de três estados, `Panel`, Flyout (com popup acrílico, animação do sistema e light dismiss)
+- [ ] Teste com NVDA; UIA do conteúdo de flyouts e popups; cache do layout de texto
+- [ ] Tudo o que falta para substituir o `explorer.exe` (layout, TextBox, MenuFlyout, ListView, ícones, barra de tarefas, Iniciar, bandeja, desktop): ver o [ROADMAP.md](ROADMAP.md)
 - Fora do escopo: Mica no Win10/Win11 21H2 (a meta é o Win11 atual)
 
 ## Licença
