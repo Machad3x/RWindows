@@ -107,7 +107,7 @@ Com alto contraste ligado, `Theme::system()` devolve `Theme::high_contrast(Syste
 | `Theme::dark` no alto contraste = fundo Window escuro (`IsColorLight`) | Inferência: decide o modo escuro do DWM na barra de título |
 | Exemplo: com alto contraste, pinta a área cliente com Window (opaca, sem Mica) e relê o tema em `WM_SYSCOLORCHANGE` e em `WM_SETTINGCHANGE` com `SPI_SETHIGHCONTRAST` ou `ImmersiveColorSet` | `SolidBackgroundFillColorBase` = Window no dicionário `HighContrast`; [High contrast parameter](https://learn.microsoft.com/windows/win32/winauto/high-contrast-parameter) |
 
-Verificado: desenho com uma paleta HC forçada (preto, branco, Highlight lilás), igual à tabela. Não verificado: ligar o alto contraste de verdade com o exemplo aberto (detecção e troca ao vivo).
+Verificado: desenho com uma paleta HC forçada (preto, branco, Highlight lilás), igual à tabela. Verificado ao vivo: com o `buttons` aberto sem alto contraste, ligar o modo (Alt+Shift+Print Screen) redesenhou a janela com as cores do tema do usuário (ButtonText amarelo, Highlight lilás, fundo Window preto), sem reiniciar. 48.6 MB, código de saída 0. Não verificado: o `demo` ao vivo e a volta ao tema normal.
 
 Pendente: `AnimatedIcon`.
 
@@ -183,7 +183,7 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 - [x] Recuperar device perdido (reset de GPU, troca de driver, RDP)
 - [x] Button: UI Automation (fragmentos, Invoke, foco), verificado com cliente UIA real
 - [x] Button: alto contraste (tabela `HighContrast` do WinUI; os dois exemplos pintam fundo Window e recarregam o tema ao vivo)
-- [ ] Alto contraste: verificar ligando o modo de verdade com os exemplos abertos
+- [x] Alto contraste ligado de verdade com o `buttons` aberto (troca ao vivo)
 - [ ] Button: eventos UIA de IsEnabled/BoundingRectangle; teste com Narrador/NVDA
 - [ ] Uma alocação UTF-16 por texto por frame
 - Fora do escopo: Mica no Win10/Win11 21H2 (a meta é o Win11 atual)
