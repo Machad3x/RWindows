@@ -199,8 +199,8 @@ Simplificações: durante o drag as cores ficam as do estado atual (no WinUI o e
 |---|---|
 | Altura 32: 14 + trilho 4 (raio 2) + 14; thumb 18 com anel visível de 22 (`Margin=-2`, raio 10) e elipse interna de 12 | `Slider_themeresources.xaml` (`SliderPre/PostContentMargin`, `SliderTrackThemeHeight`, `SliderHorizontalThumb*`, `SliderInnerThumb*`) |
 | Posição do thumb = fração × (largura − 18); o preenchimento de valor vai do início até a borda esquerda do thumb | `Slider::UpdateTrackLayout` (`multiplier * (actualWidth - thumbWidth)`) |
-| Press no trilho: captura, foco tipo ponteiro, thumb vai para o ponteiro (centro sob o cursor) e segue o mouse até soltar; press no thumb arrasta relativo, sem pulo | `OnPointerPressed` → `MoveThumbToPoint`; o `Thumb` trata o próprio press (`DragDelta`) |
-| Valor arredondado ao passo e limitado a Minimum..Maximum | `GetClosestStep` (`SliderSnapsTo_StepValues`) |
+| Press no trilho: captura, foco tipo ponteiro, thumb vai para o ponteiro (centro sob o cursor) e segue o mouse até soltar; press no thumb arrasta relativo, sem pulo. Durante o press o thumb é desenhado no valor sem arredondar (`IntermediateValue`) e volta ao valor arredondado ao soltar | `OnPointerPressed` → `MoveThumbToPoint`; o `Thumb` trata o próprio press (`DragDelta`) |
+| Entrada do ponteiro arredonda ao múltiplo do passo contado a partir de 0 (não de Minimum), dentro do intervalo; empate fica no passo de baixo. Valor programático (`set_value`, UIA `SetValue`) e setas só limitam ao intervalo, sem arredondar | `Slider::GetClosestStep`, `RangeBase::put_Value` |
 | Setas ±1 (esquerda/baixo diminui), Home/End vão aos extremos; sem PageUp/PageDown | `SliderKeyProcess.h` |
 | Elipse interna escala 0,86 (Normal, 167 ms), 1,167 (PointerOver, 250 ms), 0,71 (Pressed, 250 ms), 1,167 (Disabled, 167 ms), curva `0,0,0,1` | `SliderThumbStyle` |
 | Pincéis: trilho `ControlStrongFillColor` Default/Disabled; valor e thumb acento ×1/0.9/0.8/disabled; anel `ControlSolidFillColorDefault` com borda de elevação | idem (tokens novos no `Theme`) |
@@ -237,7 +237,7 @@ Decisão: o `AcrylicInAppFillColorDefault` do XAML desfoca o conteúdo do própr
 | Tab/Shift+Tab pulam controles desabilitados | `IsTabStop` em controle desabilitado |
 | `Outcome { redraw, capture, events }`: a janela chama `SetCapture`/`ReleaseCapture` (vale o último pedido), dispara os eventos UIA e repinta | — |
 | Eventos: `Invoked(i)` para botão comum, `Toggled { index, old, new }` para quem tem o padrão Toggle (estado antes e depois do clique), `ValueChanged { index, old, new }` para controles de intervalo, `Focused(i)` quando o foco muda | Peers do WinUI: só Invoke ou só Toggle |
-| `trait Control` (Button, ToggleSwitch, CheckBox) e `Formats` (os quatro formatos de texto); `uia_items()` monta o modelo do `uia` | — |
+| `trait Control` (Button, ToggleSwitch, CheckBox, Slider) e `Formats` (os quatro formatos de texto); `uia_items()` monta o modelo do `uia` | — |
 
 ## UI Automation
 

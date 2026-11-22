@@ -73,6 +73,9 @@ pub struct Slider {
     thumb_drag: Option<(f32, f64)>,
     /// Pointer over the thumb (its own PointerOver state).
     thumb_over: bool,
+    /// `IntermediateValue` while pressing or dragging: unsnapped, it places the
+    /// thumb under the pointer while `value` follows the steps.
+    intermediate: Option<f64>,
     focus: Option<FocusKind>,
     scale: Tween,
 }
@@ -92,6 +95,7 @@ impl Slider {
             pressed: false,
             thumb_drag: None,
             thumb_over: false,
+            intermediate: None,
             focus: None,
             scale: Tween::idle(inner_scale(Visual::Rest)),
         }
@@ -146,7 +150,8 @@ impl Slider {
     /// Value as a 0..1 fraction of the range.
     fn fraction(&self) -> f64 {
         let range = self.maximum - self.minimum;
-        if range <= 0.0 { 0.0 } else { (self.value - self.minimum) / range }
+        let v = self.intermediate.unwrap_or(self.value);
+        if range <= 0.0 { 0.0 } else { (v - self.minimum) / range }
     }
 
     /// `HorizontalThumb` bounds (18 x 18): left = fraction x (width - 18).
@@ -163,25 +168,36 @@ impl Slider {
         (self.rect.right - self.rect.left - THUMB).max(1.0)
     }
 
-    /// `GetClosestStep` + coercion into `Minimum..=Maximum`.
+    /// `Slider::GetClosestStep`: the nearest multiple of the step counted from 0
+    /// (not from Minimum), bounded by the range; a tie keeps the lower step.
     fn snap(&self, value: f64) -> f64 {
-        let stepped = ((value - self.minimum) / self.step).round() * self.step + self.minimum;
-        stepped.clamp(self.minimum, self.maximum)
+        let n = value / self.step;
+        let next = self.maximum.min(n.ceil() * self.step);
+        let prev = self.minimum.max(n.floor() * self.step);
+        if next - value < value - prev { next } else { prev }
     }
 
-    /// `MoveThumbToPoint`: the thumb center goes under the pointer.
+    /// `MoveThumbToPoint`'s `IntermediateValue`: the thumb center under the pointer.
     fn value_at(&self, x: f32) -> f64 {
         let fraction = f64::from((x - self.rect.left - THUMB / 2.0) / self.travel()).clamp(0.0, 1.0);
-        self.snap(self.minimum + fraction * (self.maximum - self.minimum))
+        self.minimum + fraction * (self.maximum - self.minimum)
     }
 
-    /// Sets `Value` (snapped to the step, clamped); UIA `SetValue`. Ignored while disabled.
+    /// Pointer input moved the thumb to `raw`: draw it there, step the value.
+    fn track(&mut self, raw: f64) {
+        let raw = raw.clamp(self.minimum, self.maximum);
+        self.intermediate = Some(raw);
+        self.value = self.snap(raw);
+    }
+
+    /// Sets `Value` clamped to the range, without step snapping (`RangeBase::put_Value`);
+    /// UIA `SetValue`. Ignored while disabled.
     pub fn set_value(&mut self, value: f64) -> Response {
         if !self.enabled {
             return Response::default();
         }
         let before = self.snapshot();
-        self.value = self.snap(value);
+        self.value = value.clamp(self.minimum, self.maximum);
         self.changed(before)
     }
 
@@ -194,8 +210,7 @@ impl Slider {
         self.thumb_over = false;
         let lost_focus = !enabled && self.focus.take().is_some();
         if !enabled {
-            self.pressed = false;
-            self.thumb_drag = None;
+            self.end_press();
         }
         Response { capture, lost_focus, ..self.changed(before) }
     }
@@ -212,9 +227,9 @@ impl Slider {
                 if let Some((px, v0)) = self.thumb_drag {
                     // Thumb DragDelta: the value moves with the pointer, relative to the press.
                     let range = self.maximum - self.minimum;
-                    self.value = self.snap(v0 + f64::from((x - px) / self.travel()) * range);
+                    self.track(v0 + f64::from((x - px) / self.travel()) * range);
                 } else if self.pressed {
-                    self.value = self.value_at(x);
+                    self.track(self.value_at(x));
                 }
             }
             Input::PointerDown(x, y) if self.enabled && contains(self.rect, x, y) => {
@@ -226,13 +241,13 @@ impl Slider {
                     self.thumb_drag = Some((x, self.value));
                 } else {
                     self.pressed = true;
-                    self.value = self.value_at(x);
+                    self.track(self.value_at(x));
                 }
                 self.thumb_over = contains(self.thumb(), x, y);
             }
             Input::PointerUp(x, y) if self.is_captured() => {
-                self.pressed = false;
-                self.thumb_drag = None;
+                // PerformPointerUpAction / OnThumbDragCompleted: the thumb snaps to Value.
+                self.end_press();
                 self.pointer_over = contains(self.rect, x, y);
                 self.thumb_over = contains(self.thumb(), x, y);
                 r.capture = Some(false);
@@ -249,8 +264,9 @@ impl Slider {
                     Key::End => Some(self.maximum),
                     _ => None,
                 };
+                // RangeBase Step -> put_Value: coerced into the range, not step-snapped.
                 if let Some(v) = target {
-                    self.value = self.snap(v);
+                    self.value = v.clamp(self.minimum, self.maximum);
                 }
             }
             Input::Focus(kind) => self.focus = Some(kind),
@@ -258,25 +274,28 @@ impl Slider {
                 self.focus = None;
                 // shortcut: losing focus also ends a pointer press (keeps Panel's Tab-while-pressed rule); XAML keeps the capture.
                 if self.is_captured() {
-                    self.pressed = false;
-                    self.thumb_drag = None;
+                    self.end_press();
                     r.capture = Some(false);
                 }
             }
-            Input::CaptureLost => {
-                self.pressed = false;
-                self.thumb_drag = None;
-            }
+            Input::CaptureLost => self.end_press(),
             _ => {}
         }
         Response { capture: r.capture, take_focus: r.take_focus, ..self.changed(before) }
     }
 
-    fn snapshot(&self) -> (Visual, Visual, bool, f64) {
-        (self.visual(), self.thumb_visual(), self.focus_visible(), self.value)
+    /// Ends a track press or thumb drag; the thumb returns to the stepped value.
+    fn end_press(&mut self) {
+        self.pressed = false;
+        self.thumb_drag = None;
+        self.intermediate = None;
     }
 
-    fn changed(&mut self, before: (Visual, Visual, bool, f64)) -> Response {
+    fn snapshot(&self) -> (Visual, Visual, bool, f64, Option<f64>) {
+        (self.visual(), self.thumb_visual(), self.focus_visible(), self.value, self.intermediate)
+    }
+
+    fn changed(&mut self, before: (Visual, Visual, bool, f64, Option<f64>)) -> Response {
         let thumb = self.thumb_visual();
         if thumb != before.1 {
             // Inner thumb ScaleX/Y: 0,0,0,1 spline, 167 ms into Normal/Disabled, 250 ms otherwise.
@@ -401,6 +420,39 @@ mod tests {
     }
 
     #[test]
+    fn a_tie_between_two_steps_should_go_to_the_lower_one() {
+        let mut s = slider(0.0);
+        // 1 DIP into the 200-DIP travel = 0.5: GetClosestStep keeps the previous step.
+        s.handle(Input::PointerDown(10.0, 16.0));
+        assert_eq!(s.value(), 0.0);
+    }
+
+    #[test]
+    fn steps_should_count_from_zero_not_from_minimum() {
+        let mut s = Slider::new("x", rect(0.0, 0.0, 218.0, HEIGHT), 0.5, 10.5, 0.5);
+        // 19% of 0.5..10.5 = 2.4 -> nearest multiple of 1 from 0 is 2 (a grid from
+        // Minimum would give 2.5).
+        s.handle(Input::PointerDown(9.0 + 0.19 * 200.0, 16.0));
+        assert_eq!(s.value(), 2.0);
+    }
+
+    #[test]
+    fn programmatic_value_should_not_snap() {
+        let mut s = slider(0.0);
+        s.set_value(62.5);
+        assert_eq!(s.value(), 62.5);
+    }
+
+    #[test]
+    fn thumb_should_stay_under_the_pointer_during_a_press_and_snap_on_release() {
+        let mut s = Slider::new("x", rect(0.0, 0.0, 218.0, HEIGHT), 0.0, 10.0, 0.0);
+        s.handle(Input::PointerDown(9.0 + 0.33 * 200.0, 16.0));
+        let during = (s.value(), s.thumb().left.round());
+        s.handle(Input::PointerUp(9.0 + 0.33 * 200.0, 16.0));
+        assert_eq!((during, s.thumb().left.round()), ((3.0, 66.0), 60.0));
+    }
+
+    #[test]
     fn moving_after_a_track_press_should_follow_the_pointer() {
         let mut s = slider(0.0);
         s.handle(Input::PointerDown(109.0, 16.0));
@@ -474,12 +526,12 @@ mod tests {
     fn set_value_should_snap_and_clamp_and_ignore_when_disabled() {
         let mut s = slider(0.0);
         s.set_value(12.4);
-        let snapped = s.value();
+        let kept = s.value();
         s.set_value(500.0);
         let clamped = s.value();
         s.set_enabled(false);
         s.set_value(3.0);
-        assert_eq!((snapped, clamped, s.value()), (12.0, 100.0, 100.0));
+        assert_eq!((kept, clamped, s.value()), (12.4, 100.0, 100.0));
     }
 
     #[test]
