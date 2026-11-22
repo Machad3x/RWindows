@@ -208,7 +208,7 @@ Simplificações: durante o drag as cores ficam as do estado atual (no WinUI o e
 | `Item::control_type` (Button ou CheckBox) | O `CheckBoxAutomationPeer` devolve `AutomationControlType_CheckBox`; Button, ToggleButton e ToggleSwitch devolvem Button | `CheckBoxAutomationPeer_Partial.cpp` |
 | Dependência direta `windows-core` 0.62.2 | O `#[implement]` gera caminhos `::windows_core`; já estava na árvore | `Cargo.lock` |
 
-Testes: 21 com objetos COM reais numa janela oculta (navegação, propriedades, pixels de tela, hit test, foco, runtime ids, Invoke assíncrono e desabilitado, Toggle no lugar de Invoke, ToggleState, Toggle assíncrono e desabilitado, elemento removido).
+Testes: 22 com objetos COM reais numa janela oculta (navegação, propriedades, tipo de controle, pixels de tela, hit test, foco, runtime ids, Invoke assíncrono e desabilitado, Toggle no lugar de Invoke, ToggleState, Toggle assíncrono e desabilitado, elemento removido).
 
 Integração (`examples/buttons.rs`): thread de UI em STA (`CoInitializeEx(COINIT_APARTMENTTHREADED)`); `WM_GETOBJECT` com `UiaRootObjectId` devolve a raiz; o modelo é sincronizado a cada render; eventos `AutomationFocusChanged` e `Invoke_Invoked` (só quando `UiaClientsAreListening`); `UiaReturnRawElementProvider(hwnd, 0, 0, NULL)` no `WM_DESTROY`.
 

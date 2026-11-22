@@ -201,6 +201,15 @@ impl Button {
         self.accepts_return = accepts;
     }
 
+    /// `put_IsPressed(FALSE)`: drops the pressed state (and a held Space/Enter) but
+    /// keeps the pointer capture; a later move back inside presses again.
+    pub(crate) fn cancel_press(&mut self) -> Response {
+        let before = self.snapshot();
+        self.pressed = false;
+        self.key_down = false;
+        self.changed(before)
+    }
+
     /// Sets `IsChecked` of a toggle button without a click.
     pub(crate) fn set_checked(&mut self, checked: bool) -> Response {
         let before = self.snapshot();

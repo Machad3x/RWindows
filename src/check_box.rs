@@ -112,12 +112,14 @@ impl CheckBox {
         };
         let enabled = self.visual() != Visual::Disabled;
         if let Some(checked) = target.filter(|_| enabled && self.inner.has_focus()) {
-            // OnKeyDownInternal: put_IsPressed(FALSE) (the base handler already cancelled a
-            // held Space for this non-press key), then put_IsChecked.
+            // OnKeyDownInternal: put_IsPressed(FALSE) (also during a mouse press: the
+            // release then skips OnClick), then put_IsChecked.
             let was = self.is_checked();
             let base = self.inner.handle(input);
+            let cancel = self.inner.cancel_press();
             let set = self.inner.set_checked(checked);
-            return Response { redraw: base.redraw || set.redraw, clicked: was != checked, ..base };
+            let redraw = base.redraw || cancel.redraw || set.redraw;
+            return Response { redraw, clicked: was != checked, ..base };
         }
         self.inner.handle(input)
     }
@@ -264,6 +266,16 @@ mod tests {
         // put_IsPressed(FALSE): the Space release no longer clicks.
         c.handle(Input::KeyUp(Key::Space));
         assert_eq!((c.is_checked(), c.visual()), (false, Visual::Rest));
+    }
+
+    #[test]
+    fn numpad_plus_during_a_mouse_press_should_cancel_the_click() {
+        let mut c = check_box(false);
+        c.handle(Input::PointerDown(INSIDE.0, INSIDE.1));
+        c.handle(Input::KeyDown(Key::Add));
+        // put_IsPressed(FALSE): the release no longer runs OnClick.
+        let up = c.handle(Input::PointerUp(INSIDE.0, INSIDE.1));
+        assert_eq!((c.is_checked(), up.clicked), (true, false));
     }
 
     #[test]
