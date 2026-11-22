@@ -138,9 +138,19 @@ pub struct Button {
     /// `m_bIsSpaceOrEnterKeyDown`.
     key_down: bool,
     focus: Option<FocusKind>,
-    /// Visual the background is transitioning from (`BackgroundTransition`).
-    bg_from: Visual,
+    /// `ToggleButton.IsChecked`; `None` for a plain button.
+    checked: Option<bool>,
+    /// State the background is transitioning from (`BackgroundTransition`).
+    bg_from: (Visual, Look),
     bg: Tween,
+}
+
+/// Which brush table applies: `Checked` is the `ToggleButton` checked states.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Look {
+    Default,
+    Accent,
+    Checked,
 }
 
 /// `ButtonBase::IsValidPointerPosition` tolerance, in DIPs.
@@ -159,8 +169,37 @@ impl Button {
             left_down: false,
             key_down: false,
             focus: None,
-            bg_from: Visual::Rest,
+            checked: None,
+            bg_from: (Visual::Rest, if accent { Look::Accent } else { Look::Default }),
             bg: Tween::idle(1.0),
+        }
+    }
+
+    /// WinUI `ToggleButton` (`DefaultToggleButtonStyle`), two-state.
+    pub fn toggle(label: &str, rect: D2D_RECT_F, checked: bool) -> Self {
+        Self { checked: Some(checked), ..Self::new(label, rect, false) }
+    }
+
+    /// `IsChecked` of a toggle button; `None` for a plain button.
+    pub fn is_checked(&self) -> Option<bool> {
+        self.checked
+    }
+
+    /// Programmatic click (`OnClick`, used by UI Automation Invoke/Toggle): a toggle
+    /// button flips `IsChecked` first. Does nothing while disabled.
+    pub fn invoke(&mut self) -> Response {
+        if !self.enabled {
+            return Response::default();
+        }
+        let before = self.snapshot();
+        self.on_click();
+        Response { clicked: true, ..self.changed(before) }
+    }
+
+    /// `ToggleButton::OnClick`: `OnToggle` (flip `IsChecked`) before the click.
+    fn on_click(&mut self) {
+        if let Some(checked) = &mut self.checked {
+            *checked = !*checked;
         }
     }
 
@@ -283,12 +322,23 @@ impl Button {
             }
             _ => {}
         }
+        if r.clicked {
+            self.on_click();
+        }
         Response { clicked: r.clicked, capture: r.capture, take_focus: r.take_focus, ..self.changed(before) }
     }
 
     /// Target brushes for the current visual state.
     pub fn style(&self, t: &Theme) -> Style {
-        style_of(self.visual(), self.accent, t)
+        style_of(self.visual(), self.look(), t)
+    }
+
+    fn look(&self) -> Look {
+        match (self.checked, self.accent) {
+            (Some(true), _) => Look::Checked,
+            (_, true) => Look::Accent,
+            _ => Look::Default,
+        }
     }
 
     /// True while the 83 ms background transition runs.
@@ -299,12 +349,12 @@ impl Button {
     /// Draws the button (and the focus rectangle when keyboard-focused).
     pub fn draw(&self, s: &Surface, t: &Theme, format: &IDWriteTextFormat) -> Result<()> {
         let style = self.style(t);
-        let from = style_of(self.bg_from, self.accent, t).background;
+        let from = style_of(self.bg_from.0, self.bg_from.1, t).background;
         let background = lerp(from, style.background, self.bg.value());
         let radius = theme::CONTROL_RADIUS;
         let r = self.rect;
-        if self.accent {
-            // AccentButtonStyle: BackgroundSizing=OuterBorderEdge.
+        if self.look() != Look::Default {
+            // AccentButtonStyle and ToggleButton Checked*: BackgroundSizing=OuterBorderEdge.
             s.fill_round(r, radius, background);
         } else {
             // DefaultButtonStyle: BackgroundSizing=InnerBorderEdge. Inset by the border as
@@ -340,15 +390,15 @@ impl Button {
         x >= r.left - tolerance && x <= r.right + tolerance && y >= r.top - tolerance && y <= r.bottom + tolerance
     }
 
-    fn snapshot(&self) -> (Visual, bool) {
-        (self.visual(), self.focus_visible())
+    fn snapshot(&self) -> (Visual, bool, Look) {
+        (self.visual(), self.focus_visible(), self.look())
     }
 
-    fn changed(&mut self, before: (Visual, bool)) -> Response {
-        if self.visual() != before.0 {
+    fn changed(&mut self, before: (Visual, bool, Look)) -> Response {
+        if (self.visual(), self.look()) != (before.0, before.2) {
             // BrushTransition Duration=0:0:0.083 on the background only.
             // shortcut: a change mid-transition restarts from the previous state's color, not the blended one (<83 ms); track the drawn color if it shows.
-            self.bg_from = before.0;
+            self.bg_from = (before.0, before.2);
             self.bg = Tween::idle(0.0);
             self.bg.retarget(1.0, easing::FASTER, easing::LINEAR);
         }
@@ -356,10 +406,12 @@ impl Button {
     }
 }
 
-fn style_of(visual: Visual, accent: bool, t: &Theme) -> Style {
+fn style_of(visual: Visual, look: Look, t: &Theme) -> Style {
     if let Some(c) = t.high_contrast {
-        return high_contrast_style(visual, accent, &c);
+        return high_contrast_style(visual, look, &c);
     }
+    // ToggleButton Checked* states use the accent brushes outside high contrast.
+    let accent = look != Look::Default;
     let elevation = |edge, edge_color, rest| Border::Elevation { edge, edge_color, rest };
     let default_edge = if t.dark { Edge::Top } else { Edge::Bottom };
     match (accent, visual) {
@@ -380,18 +432,22 @@ fn style_of(visual: Visual, accent: bool, t: &Theme) -> Style {
     }
 }
 
-/// `HighContrast` dictionary of `Button_themeresources.xaml`, with each
-/// `SystemControl*Brush` resolved through the framework's `generic.xaml`.
-fn high_contrast_style(visual: Visual, accent: bool, c: &SystemColors) -> Style {
+/// `HighContrast` dictionaries of `Button_themeresources.xaml` and
+/// `ToggleButton_themeresources.xaml` (`Checked*`; unchecked states equal the
+/// default button), with each `SystemControl*Brush` resolved through the
+/// framework's `generic.xaml`.
+fn high_contrast_style(visual: Visual, look: Look, c: &SystemColors) -> Style {
     let style = |background, foreground, border| Style { background, foreground, border: Border::Solid(border) };
-    match (accent, visual) {
+    match (look, visual) {
         (_, Visual::Disabled) => style(c.button_face, c.gray_text, c.gray_text),
-        (false, Visual::Rest) => style(c.button_face, c.button_text, c.button_text),
-        (false, Visual::PointerOver) => style(c.highlight_text, c.highlight, c.highlight),
-        (false, Visual::Pressed) => style(c.highlight_text, c.highlight, c.highlight_text),
-        (true, Visual::Rest) => style(c.highlight, c.highlight_text, c.highlight),
-        (true, Visual::PointerOver) => style(c.button_text, c.button_face, c.highlight),
-        (true, Visual::Pressed) => style(c.button_face, c.highlight, c.highlight),
+        (Look::Default, Visual::Rest) => style(c.button_face, c.button_text, c.button_text),
+        (Look::Default, Visual::PointerOver) => style(c.highlight_text, c.highlight, c.highlight),
+        (Look::Default | Look::Checked, Visual::Pressed) => style(c.highlight_text, c.highlight, c.highlight_text),
+        (Look::Checked, Visual::Rest) => style(c.highlight, c.highlight_text, c.highlight_text),
+        (Look::Checked, Visual::PointerOver) => style(c.button_text, c.button_face, c.button_text),
+        (Look::Accent, Visual::Rest) => style(c.highlight, c.highlight_text, c.highlight),
+        (Look::Accent, Visual::PointerOver) => style(c.button_text, c.button_face, c.highlight),
+        (Look::Accent, Visual::Pressed) => style(c.button_face, c.highlight, c.highlight),
     }
 }
 
@@ -702,6 +758,97 @@ mod tests {
         let mut b = Button::new("Ok", rect(0.0, 0.0, 80.0, 32.0), true);
         b.set_enabled(false);
         assert_eq!(hc(&b), (HC.button_face, HC.gray_text, Border::Solid(HC.gray_text)));
+    }
+
+    fn toggle(checked: bool) -> Button {
+        Button::toggle("Wi-Fi", rect(0.0, 0.0, 80.0, 32.0), checked)
+    }
+
+    fn click(b: &mut Button) -> Response {
+        b.handle(Input::PointerDown(INSIDE.0, INSIDE.1));
+        b.handle(Input::PointerUp(INSIDE.0, INSIDE.1))
+    }
+
+    #[test]
+    fn plain_button_should_have_no_checked_state() {
+        assert_eq!(button().is_checked(), None);
+    }
+
+    #[test]
+    fn toggle_click_should_check_and_report_the_click() {
+        let mut b = toggle(false);
+        let r = click(&mut b);
+        assert_eq!((b.is_checked(), r.clicked), (Some(true), true));
+    }
+
+    #[test]
+    fn toggle_second_click_should_uncheck() {
+        let mut b = toggle(false);
+        click(&mut b);
+        click(&mut b);
+        assert_eq!(b.is_checked(), Some(false));
+    }
+
+    #[test]
+    fn toggle_keyboard_click_should_check() {
+        let mut b = toggle(false);
+        b.handle(Input::Focus(FocusKind::Keyboard));
+        b.handle(Input::KeyDown(Key::Space));
+        b.handle(Input::KeyUp(Key::Space));
+        assert_eq!(b.is_checked(), Some(true));
+    }
+
+    #[test]
+    fn invoke_should_toggle_and_click() {
+        let mut b = toggle(false);
+        let r = b.invoke();
+        assert_eq!((b.is_checked(), r.clicked, r.redraw), (Some(true), true, true));
+    }
+
+    #[test]
+    fn invoke_should_click_a_plain_button_without_checking_it() {
+        let mut b = button();
+        let r = b.invoke();
+        assert_eq!((b.is_checked(), r.clicked), (None, true));
+    }
+
+    #[test]
+    fn invoke_should_do_nothing_while_disabled() {
+        let mut b = toggle(false);
+        b.set_enabled(false);
+        assert_eq!((b.invoke(), b.is_checked()), (Response::default(), Some(false)));
+    }
+
+    #[test]
+    fn checked_should_use_the_accent_brushes_outside_high_contrast() {
+        let accent = Button::new("Ok", rect(0.0, 0.0, 80.0, 32.0), true).style(&Theme::DARK);
+        assert_eq!(toggle(true).style(&Theme::DARK), accent);
+    }
+
+    #[test]
+    fn checking_should_start_the_background_transition() {
+        let mut b = toggle(false);
+        b.invoke();
+        assert!(b.animating());
+    }
+
+    #[test]
+    fn high_contrast_checked_rest_should_fill_with_highlight_and_border_with_highlight_text() {
+        assert_eq!(hc(&toggle(true)), (HC.highlight, HC.highlight_text, Border::Solid(HC.highlight_text)));
+    }
+
+    #[test]
+    fn high_contrast_checked_pointer_over_should_fill_with_button_text() {
+        let mut b = toggle(true);
+        b.handle(Input::PointerMove(INSIDE.0, INSIDE.1));
+        assert_eq!(hc(&b), (HC.button_text, HC.button_face, Border::Solid(HC.button_text)));
+    }
+
+    #[test]
+    fn high_contrast_checked_pressed_should_fill_with_highlight_text() {
+        let mut b = toggle(true);
+        b.handle(Input::PointerDown(INSIDE.0, INSIDE.1));
+        assert_eq!(hc(&b), (HC.highlight_text, HC.highlight, Border::Solid(HC.highlight_text)));
     }
 
     #[test]

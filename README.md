@@ -88,6 +88,19 @@ Desenho (`Button::draw`):
 
 Exemplo: `cargo run --release --example buttons` (Tab/Shift+Tab, Espaço/Enter, mouse com captura). Medido: 47.9 MB de working set, 0 ms de CPU parado em 3 s.
 
+### ToggleButton
+
+`Button::toggle(label, rect, checked)` é o `ToggleButton` de dois estados (os blocos de Configurações rápidas do Win11 são desse tipo). Usa a mesma entrada do `ButtonBase`; `is_checked()` devolve `None` num botão comum.
+
+| Regra | Fonte |
+|---|---|
+| Cada clique (ponteiro, teclado ou `invoke()`) inverte `IsChecked` antes de reportar o clique | `ToggleButton::OnClick` → `OnToggle` (`ToggleButton_Partial.cpp`) |
+| `invoke()` é o `OnClick` programático, usado pelo UI Automation; desabilitado, não faz nada | `AutomationToggleButtonOnToggle` chama `OnClick`; o peer recusa se `!IsEnabled` |
+| Estados visuais: Checked/CheckedPointerOver/CheckedPressed/CheckedDisabled, mesma prioridade do Button | `ToggleButton::ChangeVisualState` |
+| Fora do alto contraste, Checked* = pincéis do accent (`AccentFillColor*`, `TextOnAccentFillColor*`, `AccentControlElevationBorderBrush`, sem borda no Pressed/Disabled) e fundo `OuterBorderEdge` | [`ToggleButton_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/ToggleButton_themeresources.xaml) (`ToggleButtonCheckedStateBackgroundSizing`) |
+| Alto contraste, Checked: Highlight / HighlightText / HighlightText; Over: ButtonText / ButtonFace / ButtonText; Pressed: HighlightText / Highlight / HighlightText; Disabled igual ao Button | idem, dicionário `HighContrast` + `generic.xaml` |
+| Marcar/desmarcar também anima o fundo (83 ms) | `BrushTransition` do template |
+
 ### Alto contraste
 
 Com alto contraste ligado, `Theme::system()` devolve `Theme::high_contrast(SystemColors::current())`. O campo `Theme::high_contrast` guarda as cores do usuário e o `Button` troca a tabela de tokens pelo dicionário `HighContrast` do WinUI. Toda borda vira sólida de 1 DIP, sem gradiente de elevação.
