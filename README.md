@@ -319,6 +319,10 @@ O presenter está implementado em `ListView::draw` com os pincéis acima (inclui
 
 Falta: barra de rolagem desenhada, PageUp/PageDown, seleção múltipla, arrastar, agrupamento/cabeçalhos, `GridView`, transições de seleção e UIA (SelectionItem/Selection pattern).
 
+## Cache de layout de texto
+
+`Surface::text` não chama mais `DrawText` (que recriava o `IDWriteTextLayout` a cada desenho). Os layouts ficam num `HashMap` na `Surface`, com chave formato + hash FNV-1a do texto + largura/altura do retângulo; o texto original é guardado junto para descartar colisões de hash. O cache é por `Surface` e some quando o device é recriado, o que é correto porque o DirectWrite é independente de device. Teste em `src/gfx.rs` confirma que duas chamadas com o mesmo texto produzem um layout.
+
 ## TextBox
 
 `text_box::TextBox` guarda o conteúdo por índice de caracteres (seguro para acentos e emoji), com cursor, seleção, inserção, Backspace/Delete, setas/Home/End e Ctrl+A/C/X/V. O clipboard usa `CF_UNICODETEXT`, então copiar/colar preserva Unicode. O desenho usa `ControlFillColorDefault`, borda de 1 DIP `ControlStrokeColorDefault`, raio 4, padding 8,6, seleção em acento e caret piscando de 1 DIP. O exemplo `examples/progress.rs` aceita digitação por `WM_CHAR`; verificado com texto real.

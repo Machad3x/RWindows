@@ -41,7 +41,7 @@ O shell precisa disto antes de existir. Ordem sugerida (cada item: TDD, README, 
 - [x] **RadioButton, ProgressRing, ProgressBar**: estilos oficiais, grupo de seleção única, anel determinado/indeterminado e exemplo `examples/progress.rs` verificado visualmente. Faltam animações do glifo, estados Paused/Error e UIA.
 - [ ] **Ícones reais**: extrair ícone de app e arquivo (`IShellItemImageFactory`) e desenhar como bitmap D2D, com cache.
 - [ ] **UIA do conteúdo de flyouts e popups** (o Narrador hoje não lê o que está dentro).
-- [ ] **Cache do layout de texto** (`IDWriteTextLayout`), hoje refeito a cada frame.
+- [x] **Cache do layout de texto** (`IDWriteTextLayout`): `Surface::text` reutiliza layouts por formato/texto/tamanho, com verificação de colisão e teste.
 - [ ] **Teste com NVDA**.
 
 ---

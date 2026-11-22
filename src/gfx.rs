@@ -29,9 +29,9 @@ use windows::Win32::Graphics::DirectComposition::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_AUTOMATIC_FONT_AXES_OPTICAL_SIZE, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_AXIS_TAG_WEIGHT,
     DWRITE_FONT_AXIS_VALUE,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
     DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_METRICS, DWriteCreateFactory, IDWriteFactory6, IDWriteTextFormat,
+    DWRITE_TEXT_METRICS, DWriteCreateFactory, IDWriteFactory6, IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
@@ -47,6 +47,8 @@ use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{Error, Interface, Result, w};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 
 use windows_numerics::{Matrix3x2, Vector2};
@@ -67,6 +69,14 @@ pub struct Surface {
     hwnd: HWND,
     dpi: f32,
     px: (u32, u32),
+    /// `IDWriteTextLayout`s from `Surface::text`, keyed by format, text and width.
+    /// DirectWrite layouts are device independent, so they survive target binds.
+    layouts: RefCell<HashMap<(usize, u64, u32, u32), CachedLayout>>,
+}
+
+struct CachedLayout {
+    text: String,
+    layout: IDWriteTextLayout,
 }
 
 impl Surface {
@@ -115,6 +125,7 @@ impl Surface {
                 hwnd,
                 dpi: GetDpiForWindow(hwnd) as f32,
                 px,
+                layouts: RefCell::new(HashMap::new()),
             };
             surface.bind()?;
             Ok(surface)
@@ -371,15 +382,34 @@ impl Surface {
         drawn
     }
 
-    /// Draws `text` laid out inside `rect` (no heap allocation for short labels).
-    // shortcut: DrawText lays the text out on every call; cache IDWriteTextLayout per label if profiling shows it.
+    /// Draws `text` inside `rect`, reusing the `IDWriteTextLayout` between frames.
     pub fn text(&self, text: &str, format: &IDWriteTextFormat, rect: D2D_RECT_F, color: D2D1_COLOR_F) {
-        with_wide(text, |wide| unsafe {
+        let width = (rect.right - rect.left).max(0.0);
+        let height = (rect.bottom - rect.top).max(0.0);
+        let key = (format.as_raw() as usize, text_hash(text), width.to_bits(), height.to_bits());
+        let mut layouts = self.layouts.borrow_mut();
+        if layouts.get(&key).is_none_or(|c| c.text != text) {
+            let layout = with_wide(text, |wide| unsafe {
+                self.dwrite.CreateTextLayout(wide, format, width, height)
+            }).expect("CreateTextLayout");
+            layouts.insert(key, CachedLayout { text: text.to_owned(), layout });
+        }
+        let cached = &layouts[&key];
+        unsafe {
             self.brush.SetColor(&color);
-            self.ctx.DrawText(wide, format, &rect, &self.brush,
-                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, DWRITE_MEASURING_MODE_NATURAL);
-        });
+            self.ctx.DrawTextLayout(Vector2::new(rect.left, rect.top), &cached.layout, &self.brush,
+                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+        }
     }
+}
+
+/// FNV-1a of the text bytes; collisions are checked against the stored string.
+fn text_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in text.bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 /// UTF-16 units encoded on the stack; longer text falls back to the heap.
@@ -497,6 +527,18 @@ mod tests {
         let (short, h) = surface.measure("Ok", &body).unwrap();
         let (long, _) = surface.measure("Configurações", &body).unwrap();
         assert!(short > 0.0 && long > short && (h - 18.62).abs() < 0.05, "{short} {long} {h}");
+    }
+
+    #[test]
+    fn text_should_reuse_the_layout_between_frames() {
+        let surface = Surface::new(hidden_window()).unwrap();
+        let body = surface.format(&theme::BODY).unwrap();
+        let r = rect(0.0, 0.0, 200.0, 32.0);
+        surface.text("cache me", &body, r, theme::argb(0xFFFFFFFF));
+        surface.text("cache me", &body, r, theme::argb(0xFF000000));
+        assert_eq!(surface.layouts.borrow().len(), 1);
+        surface.text("another", &body, r, theme::argb(0xFFFFFFFF));
+        assert_eq!(surface.layouts.borrow().len(), 2);
     }
 
     #[test]
