@@ -25,6 +25,20 @@ const MIN_SIZE: (f32, f32) = (120.0, 32.0);
 /// `CheckBoxFocusVisualMargin` = -7,-3,-7,-3.
 const FOCUS_MARGIN: (f32, f32) = (7.0, 3.0);
 
+/// `CheckBoxIndeterminateGlyph` (Segoe Fluent Icons `CheckboxIndeterminate`).
+const INDETERMINATE_GLYPH: &str = "\u{E9AE}";
+
+/// `IsChecked`: `true`, `false` or null (Indeterminate, only with `IsThreeState`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckState {
+    /// `IsChecked == false`.
+    Unchecked,
+    /// `IsChecked == true`.
+    Checked,
+    /// `IsChecked == null`.
+    Indeterminate,
+}
+
 /// Brushes of one combined state (`CheckBox*` resources).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CheckStyle {
@@ -53,6 +67,27 @@ impl CheckBox {
         let mut inner = Button::toggle(label, rect, checked);
         inner.set_accepts_return(false);
         Self { inner }
+    }
+
+    /// `IsThreeState` check box: clicks cycle Unchecked -> Checked -> Indeterminate.
+    pub fn three_state(label: &str, rect: D2D_RECT_F, state: CheckState) -> Self {
+        let mut c = Self::new(label, rect, state == CheckState::Checked);
+        c.inner.set_three_state(true);
+        if state == CheckState::Indeterminate {
+            c.inner.set_indeterminate();
+        }
+        c
+    }
+
+    /// `IsChecked`, including Indeterminate.
+    pub fn state(&self) -> CheckState {
+        if self.inner.is_indeterminate() {
+            CheckState::Indeterminate
+        } else if self.is_checked() {
+            CheckState::Checked
+        } else {
+            CheckState::Unchecked
+        }
     }
 
     /// Auto size: box + 8 + text, text 5 DIPs from the top; at least 120 x 32.
@@ -110,7 +145,8 @@ impl CheckBox {
             Input::KeyDown(Key::Subtract) => Some(false),
             _ => None,
         };
-        let enabled = self.visual() != Visual::Disabled;
+        // OnKeyDownInternal acts only when !IsThreeState && IsEnabled.
+        let enabled = self.visual() != Visual::Disabled && !self.inner.is_three_state();
         if let Some(checked) = target.filter(|_| enabled && self.inner.has_focus()) {
             // OnKeyDownInternal: put_IsPressed(FALSE) (also during a mouse press: the
             // release then skips OnClick), then put_IsChecked.
@@ -138,7 +174,7 @@ impl CheckBox {
 
     /// Target brushes for the current state.
     pub fn style(&self, t: &Theme) -> CheckStyle {
-        style_of(self.visual(), self.is_checked(), t)
+        style_of(self.visual(), self.state(), t)
     }
 
     /// Draws box, check glyph (when checked), content and the focus rectangle.
@@ -155,9 +191,12 @@ impl CheckBox {
         s.stroke_round(b, radius, 1.0, style.box_stroke);
         // The AnimatedIcon shows nothing in its Off/Indeterminate-less states; its
         // FontIcon fallback has no "off" frame, so the glyph is drawn only when checked.
-        if self.is_checked() {
+        match self.state() {
             // CheckGlyph Margin 0,1,0,-1: one DIP lower than the box.
-            s.text(CHECK_GLYPH, icon, rect(b.left, b.top + 1.0, b.right, b.bottom + 1.0), style.glyph);
+            CheckState::Checked => s.text(CHECK_GLYPH, icon, rect(b.left, b.top + 1.0, b.right, b.bottom + 1.0), style.glyph),
+            // Indeterminate states set CheckGlyph.Margin to 0.
+            CheckState::Indeterminate => s.text(INDETERMINATE_GLYPH, icon, b, style.glyph),
+            CheckState::Unchecked => {}
         }
         let content = rect(b.right + PADDING.0, r.top + PADDING.1, r.right, r.bottom);
         s.text(self.label(), text, content, style.content);
@@ -172,9 +211,19 @@ impl CheckBox {
     }
 }
 
-fn style_of(visual: Visual, checked: bool, t: &Theme) -> CheckStyle {
+fn style_of(visual: Visual, state: CheckState, t: &Theme) -> CheckStyle {
     use Visual::{Disabled, PointerOver, Pressed, Rest};
     if let Some(c) = t.high_contrast {
+        if state == CheckState::Indeterminate {
+            let (content, box_fill, box_stroke, glyph) = match visual {
+                Rest => (c.window_text, c.highlight, c.highlight, c.highlight_text),
+                PointerOver => (c.window_text, c.highlight_text, c.highlight, c.highlight),
+                Pressed => (c.window_text, c.highlight, c.highlight, c.highlight_text),
+                Disabled => (c.gray_text, c.gray_text, c.gray_text, c.window),
+            };
+            return CheckStyle { content, box_fill, box_stroke, glyph, background: Some(c.window) };
+        }
+        let checked = state == CheckState::Checked;
         let (content, box_fill, box_stroke, glyph) = match (checked, visual) {
             (false, Rest) => (c.button_text, c.button_face, c.button_text, c.button_face),
             (false, PointerOver) => (c.button_text, c.highlight_text, c.highlight, c.highlight),
@@ -188,6 +237,8 @@ fn style_of(visual: Visual, checked: bool, t: &Theme) -> CheckStyle {
         return CheckStyle { content, box_fill, box_stroke, glyph, background: Some(c.window) };
     }
     let accent = |opacity| theme::with_opacity(t.accent, opacity);
+    // Default/Light: every Indeterminate brush equals its Checked counterpart.
+    let checked = state != CheckState::Unchecked;
     let (content, box_fill, box_stroke, glyph) = match (checked, visual) {
         (false, Rest) => (t.text_primary, t.control_alt_fill_secondary, t.control_strong_stroke, t.text_on_accent),
         (false, PointerOver) => (t.text_primary, t.control_alt_fill_tertiary, t.control_strong_stroke, t.text_on_accent),
@@ -284,6 +335,55 @@ mod tests {
         c.set_enabled(false);
         c.handle(Input::KeyDown(Key::Add));
         assert!(!c.is_checked());
+    }
+
+    fn three(state: CheckState) -> CheckBox {
+        CheckBox::three_state("Todos", rect(0.0, 0.0, 120.0, 32.0), state)
+    }
+
+    #[test]
+    fn three_state_clicks_should_cycle_through_indeterminate() {
+        let mut c = three(CheckState::Unchecked);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            c.invoke();
+            seen.push(c.state());
+        }
+        assert_eq!(seen, [CheckState::Checked, CheckState::Indeterminate, CheckState::Unchecked]);
+    }
+
+    #[test]
+    fn three_state_should_start_indeterminate_when_asked() {
+        assert_eq!(three(CheckState::Indeterminate).state(), CheckState::Indeterminate);
+    }
+
+    #[test]
+    fn clicking_into_indeterminate_should_report_a_change() {
+        let mut c = three(CheckState::Checked);
+        assert!(c.invoke().clicked);
+    }
+
+    #[test]
+    fn numpad_keys_should_do_nothing_when_three_state() {
+        let mut c = three(CheckState::Indeterminate);
+        c.handle(Input::Focus(FocusKind::Keyboard));
+        c.handle(Input::KeyDown(Key::Add));
+        assert_eq!(c.state(), CheckState::Indeterminate);
+    }
+
+    #[test]
+    fn indeterminate_should_use_the_checked_brushes_outside_high_contrast() {
+        let checked = check_box(true).style(&Theme::LIGHT);
+        assert_eq!(three(CheckState::Indeterminate).style(&Theme::LIGHT), checked);
+    }
+
+    #[test]
+    fn high_contrast_indeterminate_pointer_over_should_use_highlight_text_fill_and_window_text() {
+        let mut c = three(CheckState::Indeterminate);
+        c.handle(Input::PointerMove(INSIDE.0, INSIDE.1));
+        let s = c.style(&Theme::high_contrast(HC));
+        assert_eq!((s.content, s.box_fill, s.box_stroke, s.glyph),
+            (HC.window_text, HC.highlight_text, HC.highlight, HC.highlight));
     }
 
     #[test]

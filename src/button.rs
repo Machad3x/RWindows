@@ -148,6 +148,10 @@ pub struct Button {
     subtle: bool,
     /// `m_bKeyboardNavigationAcceptsReturn`: Enter presses like Space (false on CheckBox).
     accepts_return: bool,
+    /// `IsThreeState`: Checked toggles to Indeterminate instead of Unchecked.
+    three_state: bool,
+    /// `IsChecked == null` (`checked` then holds `Some(false)`).
+    indeterminate: bool,
     /// State the background is transitioning from (`BackgroundTransition`).
     bg_from: (Visual, Look),
     bg: Tween,
@@ -181,6 +185,8 @@ impl Button {
             checked: None,
             subtle: false,
             accepts_return: true,
+            three_state: false,
+            indeterminate: false,
             bg_from: (Visual::Rest, if accent { Look::Accent } else { Look::Default }),
             bg: Tween::idle(1.0),
         }
@@ -201,6 +207,31 @@ impl Button {
         self.accepts_return = accepts;
     }
 
+    /// `IsThreeState` (CheckBox only for now).
+    pub(crate) fn set_three_state(&mut self, three_state: bool) {
+        self.three_state = three_state;
+    }
+
+    /// `IsThreeState`.
+    pub(crate) fn is_three_state(&self) -> bool {
+        self.three_state
+    }
+
+    /// True when `IsChecked` is null (Indeterminate).
+    pub(crate) fn is_indeterminate(&self) -> bool {
+        self.indeterminate
+    }
+
+    /// Sets `IsChecked` to null (Indeterminate) without a click.
+    pub(crate) fn set_indeterminate(&mut self) -> Response {
+        let before = self.snapshot();
+        if self.checked.is_some() {
+            self.checked = Some(false);
+            self.indeterminate = true;
+        }
+        self.changed(before)
+    }
+
     /// `put_IsPressed(FALSE)`: drops the pressed state (and a held Space/Enter) but
     /// keeps the pointer capture; a later move back inside presses again.
     pub(crate) fn cancel_press(&mut self) -> Response {
@@ -215,6 +246,7 @@ impl Button {
         let before = self.snapshot();
         if self.checked.is_some() {
             self.checked = Some(checked);
+            self.indeterminate = false;
         }
         self.changed(before)
     }
@@ -235,11 +267,18 @@ impl Button {
         Response { clicked: true, ..self.changed(before) }
     }
 
-    /// `ToggleButton::OnClick`: `OnToggle` (flip `IsChecked`) before the click.
+    /// `ToggleButton::OnClick`: `OnToggle` before the click. `OnToggleImpl`:
+    /// Indeterminate -> Unchecked, Checked -> Indeterminate (three-state) or
+    /// Unchecked, Unchecked -> Checked.
     fn on_click(&mut self) {
-        if let Some(checked) = &mut self.checked {
-            *checked = !*checked;
-        }
+        let Some(checked) = self.checked else { return };
+        let (next, indeterminate) = match (self.indeterminate, checked) {
+            (true, _) => (false, false),
+            (false, true) => (false, self.three_state),
+            (false, false) => (true, false),
+        };
+        self.checked = Some(next);
+        self.indeterminate = indeterminate;
     }
 
     /// Body text format centered like `HorizontalContentAlignment`/`VerticalContentAlignment=Center`.
@@ -451,11 +490,11 @@ impl Button {
         x >= r.left - tolerance && x <= r.right + tolerance && y >= r.top - tolerance && y <= r.bottom + tolerance
     }
 
-    fn snapshot(&self) -> (Visual, bool, Look) {
-        (self.visual(), self.focus_visible(), self.look())
+    fn snapshot(&self) -> (Visual, bool, Look, bool) {
+        (self.visual(), self.focus_visible(), self.look(), self.indeterminate)
     }
 
-    fn changed(&mut self, before: (Visual, bool, Look)) -> Response {
+    fn changed(&mut self, before: (Visual, bool, Look, bool)) -> Response {
         if (self.visual(), self.look()) != (before.0, before.2) {
             // BrushTransition Duration=0:0:0.083 on the background only.
             // shortcut: a change mid-transition restarts from the previous state's color, not the blended one (<83 ms); track the drawn color if it shows.
@@ -854,6 +893,39 @@ mod tests {
         b.handle(Input::KeyDown(Key::Enter));
         let up = b.handle(Input::KeyUp(Key::Enter));
         assert_eq!((b.is_checked(), up.clicked), (Some(false), false));
+    }
+
+    #[test]
+    fn three_state_click_should_cycle_unchecked_checked_indeterminate_unchecked() {
+        let mut b = toggle(false);
+        b.set_three_state(true);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            click(&mut b);
+            seen.push((b.is_checked(), b.is_indeterminate()));
+        }
+        assert_eq!(seen, [(Some(true), false), (Some(false), true), (Some(false), false)]);
+    }
+
+    #[test]
+    fn two_state_click_from_checked_should_uncheck() {
+        let mut b = toggle(true);
+        click(&mut b);
+        assert_eq!((b.is_checked(), b.is_indeterminate()), (Some(false), false));
+    }
+
+    #[test]
+    fn set_checked_should_leave_indeterminate() {
+        let mut b = toggle(false);
+        b.set_indeterminate();
+        b.set_checked(true);
+        assert_eq!((b.is_checked(), b.is_indeterminate()), (Some(true), false));
+    }
+
+    #[test]
+    fn set_indeterminate_should_report_a_redraw() {
+        let mut b = toggle(true);
+        assert_eq!((b.set_indeterminate().redraw, b.is_indeterminate()), (true, true));
     }
 
     #[test]

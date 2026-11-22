@@ -155,7 +155,7 @@ Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As 
 | Pincéis: desmarcado `ControlAltFillColor*` + `ControlStrongStrokeColor*` (Pressed usa o stroke Disabled); marcado acento ×1/0.9/0.8 no fundo e na borda, glifo `TextOnAccentFillColor*`; todas as trocas são discretas (sem transição) | `CheckBox_themeresources.xaml` |
 | Alto contraste: tabela própria e fundo do controle todo em Window (`CheckBoxBackground*`) | dicionário `HighContrast` |
 
-Sem estado indeterminado (`IsThreeState`) por enquanto.
+`CheckBox::three_state(label, rect, CheckState)` liga o `IsThreeState`: cliques fazem Unchecked → Checked → Indeterminate → Unchecked (`ToggleButton::OnToggleImpl`); `state()` devolve `CheckState`. Fora do alto contraste o indeterminado usa os pincéis do marcado (o XAML aponta as chaves `Indeterminate*` para os mesmos tokens); no alto contraste tem tabela própria, com texto em WindowText. Glifo `E9AE` (`CheckBoxIndeterminateGlyph`) sem a margem de 1 DIP (os estados Indeterminate zeram `CheckGlyph.Margin`). Com três estados o `+`/`-` não faz nada (`OnKeyDownInternal` exige `!IsThreeState`).
 
 Exemplo: "Lembrar de mim" (começa marcado) ao lado do switch; o `enum Control` ganhou `Check` e um `Formats` com os quatro formatos de texto. Verificado:
 - Cliente UIA real: tipo "caixa de seleção", só `TogglePattern`, `Toggle()` dá On → Off → On → Off com os eventos `1->0`, `0->1`, `1->0`.
