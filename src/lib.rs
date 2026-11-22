@@ -13,6 +13,7 @@ pub mod backdrop;
 pub mod button;
 pub mod check_box;
 pub mod easing;
+pub mod flyout;
 pub mod gfx;
 pub mod panel;
 pub mod slider;

@@ -213,6 +213,19 @@ Exemplo: "Volume" (0–100, começa em 40) numa quarta linha. Verificado com cli
 
 Simplificações: sem header, sem marcas (`TickBar`), sem tooltip de valor, só horizontal; perder o foco encerra um press (o XAML mantém a captura); o trilho de 2 DIPs do alto contraste fica centrado na linha do thumb (no XAML fica 1 DIP acima).
 
+## Flyout
+
+`flyout` traz as peças do `Flyout` do WinUI para uma janela popup; a janela em si (`WS_POPUP` com o backdrop `DWMSBT_TRANSIENTWINDOW` via `backdrop::apply`) fica com o app.
+
+| Regra | Fonte |
+|---|---|
+| `place(target, w, h, container, Placement)`: tenta o lado pedido e depois os fallbacks (Top → Bottom → Left → Right; Bottom → Top → Left → Right; Left → Right → Top → Bottom; Right → Left → Top → Bottom); centraliza no eixo cruzado, limita ao container e, se nada couber, fica na primeira escolha; só então soma a margem de 4 DIPs na direção em que abre | `FlyoutBase::CalculatePlacementPrivate`, `PerformPlacementWithFallback`, `TryPlacement`, `TestAgainstLimitsAndPlace`, `TestAndCenterAlignWithinLimits`, `FlyoutMargin` |
+| Abrir: desliza 50 DIPs em direção ao alvo em 367 ms com `(0.1, 0.9, 0.2, 1)`; opacidade 0 → 1 linear em 83 ms depois de 83 ms. Fechar: opacidade 1 → 0 linear em 83 ms | `PopupThemeTransition` (`g_entranceThemeOffset` = 50) = uxtheme `TAS_SHOWPOPUP`/`TAS_HIDEPOPUP` (18/19, `vsanimation.h`), lidos deste Windows |
+| Fundo: o backdrop acrílico do DWM; sem backdrop, a cor de fallback do `AcrylicInAppFillColorDefault` (#2C2C2C escuro, #F9F9F9 claro); borda `SurfaceStrokeColorFlyout` de 1 DIP; raio `OverlayCornerRadius` 8; padding 16,15,16,17; tamanho 96–456 × 40–758 | `FlyoutPresenter_themeresources.xaml`, `AcrylicBrush_themeresources.xaml`, `generic.xaml` |
+| Alto contraste: fundo Window e borda WindowText de 2 DIPs | idem, dicionário `HighContrast` |
+
+Decisão: o `AcrylicInAppFillColorDefault` do XAML desfoca o conteúdo do próprio app; numa janela popup separada, o equivalente nativo é o backdrop de sistema para janelas transitórias, o mesmo dos flyouts do shell. Por isso não pintamos o tint por cima. Limite: a opacidade da animação vale para o conteúdo desenhado; o backdrop do DWM aparece de uma vez.
+
 ## Panel (roteamento comum)
 
 `panel::Panel` guarda os controles em ordem de Tab e faz o roteamento que toda janela precisa; antes isso vivia copiado no exemplo.
