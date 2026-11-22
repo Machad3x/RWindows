@@ -22,7 +22,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, Tr
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
     LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassW, SWP_NOACTIVATE,
-    SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_DESTROY, WM_DPICHANGED,
+    SIZE_MINIMIZED, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_DESTROY, WM_DPICHANGED,
     WM_DWMCOLORIZATIONCOLORCHANGED, WM_MOUSEMOVE, WM_PAINT, WM_QUIT,
     WM_SETTINGCHANGE, WM_SIZE, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
     WS_VISIBLE,
@@ -124,6 +124,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             unsafe { _ = ValidateRect(Some(hwnd), None) };
             with_app(|a| a.render());
         }
+        // Minimized reports 0x0: keep the swap chain as is until restore.
+        WM_SIZE if wp.0 as u32 == SIZE_MINIMIZED => {}
         WM_SIZE => with_app(|a| {
             a.surface.resize(loword(lp.0) as u16 as u32, hiword(lp.0) as u16 as u32)?;
             a.render()
@@ -196,7 +198,10 @@ fn main() -> Result<()> {
             width as i32, (260.0 * k) as i32, None, None, Some(instance.into()), None)?;
 
         let theme = Theme::system();
-        backdrop::apply(hwnd, DWMSBT_MAINWINDOW, DWMWCP_ROUND, theme.dark)?;
+        // Non-fatal: before Win11 22H2 there is no system backdrop; content still draws.
+        if let Err(e) = backdrop::apply(hwnd, DWMSBT_MAINWINDOW, DWMWCP_ROUND, theme.dark) {
+            eprintln!("fluent-win demo: backdrop unavailable: {e}");
+        }
         let surface = Surface::new(hwnd)?;
         let header = surface.format(&theme::BODY_STRONG)?;
         let label = surface.format(&theme::CAPTION)?;
