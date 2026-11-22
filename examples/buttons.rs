@@ -466,10 +466,13 @@ fn main() -> Result<()> {
             x += w + GAP;
             buttons.push(b);
         }
-        // Second row: a ToggleButton, like a Quick Settings tile.
+        // Second row: a ToggleButton (Quick Settings tile) and a SubtleButton (taskbar).
         let (w, h) = Button::desired_size(&surface, &label, "Wi-Fi")?;
         let top = PAD + h + GAP * 2.0;
         buttons.push(Button::toggle("Wi-Fi", rect(PAD, top, PAD + w, top + h), true));
+        let x = PAD + w + GAP;
+        let (w, h) = Button::desired_size(&surface, &label, "Iniciar")?;
+        buttons.push(Button::subtle("Iniciar", rect(x, top, x + w, top + h)));
 
         let mut app = App {
             hwnd, surface, theme, label, body, buttons,

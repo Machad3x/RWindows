@@ -100,6 +100,8 @@ Exemplo: `cargo run --release --example buttons` (Tab/Shift+Tab, Espaço/Enter, 
 
 A borda repete a cor do fundo; com `InnerBorderEdge` o anel de 1 DIP e o fundo recuado formam uma superfície só. Mesma transição de 83 ms, foco e padding do Button. No alto contraste os valores são os do Button padrão (dicionário `HighContrast`, mesmas chaves resolvidas).
 
+Exemplo: "Iniciar" na segunda linha do `buttons`. Verificado por pixel com o cursor real em cima (tema escuro, 100%): o fundo vai de 33 para 46 em toda a área do botão, inclusive no anel da borda, sem emenda. Bate com `#0FFFFFFF` sobre 33 (33 + 0.059 × 222 ≈ 46).
+
 ### ToggleButton
 
 `Button::toggle(label, rect, checked)` é o `ToggleButton` de dois estados (os blocos de Configurações rápidas do Win11 são desse tipo). Usa a mesma entrada do `ButtonBase`; `is_checked()` devolve `None` num botão comum.
