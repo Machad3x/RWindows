@@ -4,6 +4,14 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_WEIGHT_SEMI_BOLD,
 };
+use windows::Win32::Graphics::Gdi::{
+    COLOR_BTNFACE, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW,
+    COLOR_WINDOWTEXT, GetSysColor,
+};
+use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+use windows::Win32::UI::WindowsAndMessaging::{
+    SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+};
 use windows::UI::Color;
 use windows::UI::ViewManagement::{UIColorType, UISettings};
 use windows::core::{PCWSTR, Result, w};
@@ -78,6 +86,29 @@ pub struct Theme {
     pub focus_outer: D2D1_COLOR_F,
     /// `FocusStrokeColorInner` (1-DIP inner focus ring).
     pub focus_inner: D2D1_COLOR_F,
+    /// The user's high contrast colors, when high contrast is on. Controls then
+    /// use their `HighContrast` theme dictionary instead of the tokens above.
+    pub high_contrast: Option<SystemColors>,
+}
+
+/// The `GetSysColor` colors WinUI's `HighContrast` dictionaries are built from
+/// (`SystemColor*Color` resources).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SystemColors {
+    /// `COLOR_WINDOW`: page background.
+    pub window: D2D1_COLOR_F,
+    /// `COLOR_WINDOWTEXT`: text on the page.
+    pub window_text: D2D1_COLOR_F,
+    /// `COLOR_BTNFACE`: button background.
+    pub button_face: D2D1_COLOR_F,
+    /// `COLOR_BTNTEXT`: button text and border.
+    pub button_text: D2D1_COLOR_F,
+    /// `COLOR_HIGHLIGHT`: hovered / selected background.
+    pub highlight: D2D1_COLOR_F,
+    /// `COLOR_HIGHLIGHTTEXT`: text on `highlight`.
+    pub highlight_text: D2D1_COLOR_F,
+    /// `COLOR_GRAYTEXT`: disabled text.
+    pub gray_text: D2D1_COLOR_F,
 }
 
 impl Theme {
@@ -106,6 +137,7 @@ impl Theme {
         text_on_accent_disabled: argb(0x87FFFFFF),
         focus_outer: argb(0xFFFFFFFF),
         focus_inner: argb(0xB3000000),
+        high_contrast: None,
     };
 
     /// WinUI light theme, default blue accent.
@@ -133,11 +165,46 @@ impl Theme {
         text_on_accent_disabled: argb(0xFFFFFFFF),
         focus_outer: argb(0xE4000000),
         focus_inner: argb(0xB3FFFFFF),
+        high_contrast: None,
     };
 
-    /// Current app theme and accent from `UISettings`, the documented source
-    /// WinUI itself uses. Falls back to [`Theme::LIGHT`] if WinRT is unavailable.
+    /// WinUI `HighContrast` theme (`Common_themeresources_any.xaml`) for `c`.
+    pub fn high_contrast(c: SystemColors) -> Theme {
+        Theme {
+            dark: !is_light_d2d(c.window),
+            accent: c.window,
+            text_primary: c.window_text,
+            text_secondary: c.window_text,
+            text_tertiary: c.window_text,
+            control_fill: c.button_face,
+            control_fill_hover: c.button_face,
+            control_fill_pressed: c.button_face,
+            card: c.window,
+            stroke: c.button_text,
+            subtle_hover: c.button_face,
+            subtle_pressed: c.button_face,
+            text_disabled: c.gray_text,
+            control_fill_disabled: c.button_face,
+            stroke_secondary: c.button_text,
+            stroke_on_accent: c.button_text,
+            stroke_on_accent_secondary: c.button_text,
+            accent_disabled: c.window,
+            text_on_accent: c.window_text,
+            text_on_accent_secondary: c.window_text,
+            text_on_accent_disabled: c.gray_text,
+            focus_outer: c.window_text,
+            focus_inner: c.window,
+            high_contrast: Some(c),
+        }
+    }
+
+    /// Current theme: [`Theme::high_contrast`] with the user's colors when high
+    /// contrast is on; otherwise theme and accent from `UISettings`, the documented
+    /// source WinUI itself uses (falls back to [`Theme::LIGHT`] if WinRT is unavailable).
     pub fn system() -> Theme {
+        if high_contrast_on() {
+            return Self::high_contrast(SystemColors::current());
+        }
         Self::from_ui_settings().unwrap_or(Self::LIGHT)
     }
 
@@ -161,6 +228,43 @@ fn is_light(c: Color) -> bool {
 
 fn color(c: Color) -> D2D1_COLOR_F {
     argb(u32::from_be_bytes([c.A, c.R, c.G, c.B]))
+}
+
+/// [`is_light`] for a Direct2D color.
+fn is_light_d2d(c: D2D1_COLOR_F) -> bool {
+    let byte = |v: f32| (v * 255.0).round() as u8;
+    is_light(Color { A: 255, R: byte(c.r), G: byte(c.g), B: byte(c.b) })
+}
+
+/// A `GetSysColor` `COLORREF` (`0x00BBGGRR`) as an opaque color.
+fn colorref(v: u32) -> D2D1_COLOR_F {
+    let [_, b, g, r] = v.to_be_bytes();
+    argb(u32::from_be_bytes([0xFF, r, g, b]))
+}
+
+impl SystemColors {
+    /// The user's current colors, from `GetSysColor`.
+    pub fn current() -> SystemColors {
+        let get = |i| colorref(unsafe { GetSysColor(i) });
+        SystemColors {
+            window: get(COLOR_WINDOW),
+            window_text: get(COLOR_WINDOWTEXT),
+            button_face: get(COLOR_BTNFACE),
+            button_text: get(COLOR_BTNTEXT),
+            highlight: get(COLOR_HIGHLIGHT),
+            highlight_text: get(COLOR_HIGHLIGHTTEXT),
+            gray_text: get(COLOR_GRAYTEXT),
+        }
+    }
+}
+
+/// High contrast parameter (Learn): `SPI_GETHIGHCONTRAST` with `HCF_HIGHCONTRASTON`.
+fn high_contrast_on() -> bool {
+    let mut hc = HIGHCONTRASTW { cbSize: size_of::<HIGHCONTRASTW>() as u32, ..Default::default() };
+    let ok = unsafe {
+        SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.cbSize, Some((&raw mut hc).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0))
+    };
+    ok.is_ok() && hc.dwFlags.contains(HCF_HIGHCONTRASTON)
 }
 
 /// Typographic family used by WinUI (`XamlAutoFontFamily` resolves to it).
@@ -204,7 +308,7 @@ pub const DISPLAY: Ramp = Ramp { size: 68.0, weight: SEMIBOLD };
 pub const RAMP: [Ramp; 8] = [CAPTION, BODY, BODY_STRONG, BODY_LARGE, SUBTITLE, TITLE, TITLE_LARGE, DISPLAY];
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -217,5 +321,39 @@ mod tests {
     fn is_light_should_split_white_and_black_foregrounds() {
         let rgb = |v| Color { A: 255, R: v, G: v, B: v };
         assert!(is_light(rgb(255)) && !is_light(rgb(0)));
+    }
+
+    /// Distinct colors so each assertion names exactly one system color.
+    pub(crate) const HC: SystemColors = SystemColors {
+        window: argb(0xFF000001),
+        window_text: argb(0xFFFFFF02),
+        button_face: argb(0xFF000003),
+        button_text: argb(0xFFFFFF04),
+        highlight: argb(0xFF1AEBFF),
+        highlight_text: argb(0xFF000006),
+        gray_text: argb(0xFF3FF207),
+    };
+
+    #[test]
+    fn colorref_should_read_blue_green_red() {
+        assert_eq!(colorref(0x0033_2211), argb(0xFF11_2233));
+    }
+
+    #[test]
+    fn high_contrast_text_should_use_window_text_and_gray_text() {
+        let t = Theme::high_contrast(HC);
+        assert_eq!((t.text_primary, t.text_secondary, t.text_disabled), (HC.window_text, HC.window_text, HC.gray_text));
+    }
+
+    #[test]
+    fn high_contrast_focus_should_use_window_text_outside_and_window_inside() {
+        let t = Theme::high_contrast(HC);
+        assert_eq!((t.focus_outer, t.focus_inner), (HC.window_text, HC.window));
+    }
+
+    #[test]
+    fn high_contrast_should_be_dark_when_the_window_is_dark() {
+        let light = SystemColors { window: argb(0xFFFFFFFF), ..HC };
+        assert_eq!((Theme::high_contrast(HC).dark, Theme::high_contrast(light).dark), (true, false));
     }
 }

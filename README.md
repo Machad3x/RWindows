@@ -88,7 +88,25 @@ Desenho (`Button::draw`):
 
 Exemplo: `cargo run --release --example buttons` (Tab/Shift+Tab, Espaço/Enter, mouse com captura). Medido: 47.9 MB de working set, 0 ms de CPU parado em 3 s.
 
-Pendente: provider de UI Automation (leitores de tela), alto contraste, `AnimatedIcon`.
+### Alto contraste
+
+Com alto contraste ligado, `Theme::system()` devolve `Theme::high_contrast(SystemColors::current())`. O campo `Theme::high_contrast` guarda as cores do usuário e o `Button` troca a tabela de tokens pelo dicionário `HighContrast` do WinUI. Toda borda vira sólida de 1 DIP, sem gradiente de elevação.
+
+| Estado | Padrão: fundo / texto / borda | Accent: fundo / texto / borda |
+|---|---|---|
+| Rest | ButtonFace / ButtonText / ButtonText | Highlight / HighlightText / Highlight |
+| PointerOver | HighlightText / Highlight / Highlight | ButtonText / ButtonFace / Highlight |
+| Pressed | HighlightText / Highlight / HighlightText | ButtonFace / Highlight / Highlight |
+| Disabled | ButtonFace / GrayText / GrayText | ButtonFace / GrayText / GrayText |
+
+| Decisão | Fonte |
+|---|---|
+| Detecção: `SystemParametersInfoW(SPI_GETHIGHCONTRAST)` com `HCF_HIGHCONTRASTON`; cores por `GetSysColor` (`COLOR_WINDOW`, `WINDOWTEXT`, `BTNFACE`, `BTNTEXT`, `HIGHLIGHT`, `HIGHLIGHTTEXT`, `GRAYTEXT`) | [High contrast parameter](https://learn.microsoft.com/windows/win32/winauto/high-contrast-parameter) |
+| Tabela acima: dicionário `HighContrast` do Button, com cada `SystemControl*Brush` resolvido pelo `generic.xaml` do framework (por exemplo `SystemControlHighlightBaseHighBrush` = Highlight) | [`Button_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/Button_themeresources.xaml), [`generic.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/dxaml/xcp/dxaml/themes/generic.xaml) |
+| Tokens comuns (texto = WindowText, desabilitado = GrayText, cartão = Window, borda = ButtonText) e foco: externo WindowText, interno Window | `Common_themeresources_any.xaml` e `Common_themeresources.xaml` (`SystemControlFocusVisual*` → `FocusStrokeColor*`), dicionário `HighContrast` |
+| `Theme::dark` no alto contraste = fundo Window escuro (`IsColorLight`) | Inferência: decide o modo escuro do DWM na barra de título |
+
+Pendente: `AnimatedIcon`.
 
 Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As regras de press e release vêm do padrão confirmado em `OnPointerMoved` e `KeyUp`.
 

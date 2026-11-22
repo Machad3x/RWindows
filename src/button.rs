@@ -11,7 +11,7 @@ use windows::core::Result;
 
 use crate::easing::{self, Tween};
 use crate::gfx::{Edge, Surface, rect};
-use crate::theme::{self, Theme, with_opacity};
+use crate::theme::{self, SystemColors, Theme, with_opacity};
 
 /// `ButtonPadding` = 11,5,11,6 (left, top, right, bottom).
 const PADDING: (f32, f32, f32, f32) = (11.0, 5.0, 11.0, 6.0);
@@ -357,6 +357,9 @@ impl Button {
 }
 
 fn style_of(visual: Visual, accent: bool, t: &Theme) -> Style {
+    if let Some(c) = t.high_contrast {
+        return high_contrast_style(visual, accent, &c);
+    }
     let elevation = |edge, edge_color, rest| Border::Elevation { edge, edge_color, rest };
     let default_edge = if t.dark { Edge::Top } else { Edge::Bottom };
     match (accent, visual) {
@@ -377,6 +380,21 @@ fn style_of(visual: Visual, accent: bool, t: &Theme) -> Style {
     }
 }
 
+/// `HighContrast` dictionary of `Button_themeresources.xaml`, with each
+/// `SystemControl*Brush` resolved through the framework's `generic.xaml`.
+fn high_contrast_style(visual: Visual, accent: bool, c: &SystemColors) -> Style {
+    let style = |background, foreground, border| Style { background, foreground, border: Border::Solid(border) };
+    match (accent, visual) {
+        (_, Visual::Disabled) => style(c.button_face, c.gray_text, c.gray_text),
+        (false, Visual::Rest) => style(c.button_face, c.button_text, c.button_text),
+        (false, Visual::PointerOver) => style(c.highlight_text, c.highlight, c.highlight),
+        (false, Visual::Pressed) => style(c.highlight_text, c.highlight, c.highlight_text),
+        (true, Visual::Rest) => style(c.highlight, c.highlight_text, c.highlight),
+        (true, Visual::PointerOver) => style(c.button_text, c.button_face, c.highlight),
+        (true, Visual::Pressed) => style(c.button_face, c.highlight, c.highlight),
+    }
+}
+
 fn lerp(a: D2D1_COLOR_F, b: D2D1_COLOR_F, k: f32) -> D2D1_COLOR_F {
     let m = |x: f32, y: f32| x + (y - x) * k;
     D2D1_COLOR_F { r: m(a.r, b.r), g: m(a.g, b.g), b: m(a.b, b.b), a: m(a.a, b.a) }
@@ -390,6 +408,7 @@ fn inset(r: D2D_RECT_F, by: f32) -> D2D_RECT_F {
 mod tests {
     use super::*;
     use crate::gfx::rect;
+    use crate::theme::tests::HC;
 
     const INSIDE: (f32, f32) = (20.0, 16.0);
     const OUTSIDE: (f32, f32) = (200.0, 200.0);
@@ -633,6 +652,56 @@ mod tests {
         let mut b = button();
         b.handle(Input::PointerMove(INSIDE.0, INSIDE.1));
         assert!(b.animating());
+    }
+
+    /// (background, foreground, border) of `b` in the high contrast test theme.
+    fn hc(b: &Button) -> (D2D1_COLOR_F, D2D1_COLOR_F, Border) {
+        let s = b.style(&Theme::high_contrast(HC));
+        (s.background, s.foreground, s.border)
+    }
+
+    fn hovered(accent: bool) -> Button {
+        let mut b = Button::new("Ok", rect(0.0, 0.0, 80.0, 32.0), accent);
+        b.handle(Input::PointerMove(INSIDE.0, INSIDE.1));
+        b
+    }
+
+    #[test]
+    fn high_contrast_default_rest_should_use_button_face_and_button_text() {
+        assert_eq!(hc(&button()), (HC.button_face, HC.button_text, Border::Solid(HC.button_text)));
+    }
+
+    #[test]
+    fn high_contrast_default_pointer_over_should_invert_to_highlight() {
+        assert_eq!(hc(&hovered(false)), (HC.highlight_text, HC.highlight, Border::Solid(HC.highlight)));
+    }
+
+    #[test]
+    fn high_contrast_default_pressed_should_border_with_highlight_text() {
+        assert_eq!(hc(&pressed(false)), (HC.highlight_text, HC.highlight, Border::Solid(HC.highlight_text)));
+    }
+
+    #[test]
+    fn high_contrast_accent_rest_should_fill_with_highlight() {
+        let b = Button::new("Ok", rect(0.0, 0.0, 80.0, 32.0), true);
+        assert_eq!(hc(&b), (HC.highlight, HC.highlight_text, Border::Solid(HC.highlight)));
+    }
+
+    #[test]
+    fn high_contrast_accent_pointer_over_should_fill_with_button_text() {
+        assert_eq!(hc(&hovered(true)), (HC.button_text, HC.button_face, Border::Solid(HC.highlight)));
+    }
+
+    #[test]
+    fn high_contrast_accent_pressed_should_fill_with_button_face() {
+        assert_eq!(hc(&pressed(true)), (HC.button_face, HC.highlight, Border::Solid(HC.highlight)));
+    }
+
+    #[test]
+    fn high_contrast_disabled_should_use_gray_text_for_text_and_border() {
+        let mut b = Button::new("Ok", rect(0.0, 0.0, 80.0, 32.0), true);
+        b.set_enabled(false);
+        assert_eq!(hc(&b), (HC.button_face, HC.gray_text, Border::Solid(HC.gray_text)));
     }
 
     #[test]
