@@ -98,7 +98,7 @@ Exemplo: `cargo run --release --example buttons` (Tab/Shift+Tab, Espaço/Enter, 
 | PointerOver | `SubtleFillColorSecondary` | Primary | idem |
 | Pressed | `SubtleFillColorTertiary` | Secondary | idem |
 
-A borda repete a cor do fundo; com `InnerBorderEdge` o anel de 1 DIP e o fundo recuado formam uma superfície só. Mesma transição de 83 ms, foco e padding do Button. No alto contraste os valores são os do Button padrão (dicionário `HighContrast`, mesmas chaves resolvidas).
+A borda repete a cor do fundo; com `InnerBorderEdge` o anel de 1 DIP e o fundo recuado formam uma superfície só em regime estável. Nos 83 ms da transição o anel já está na cor final e só o fundo anima, como no WinUI (o `BrushTransition` é só do `Background`). Mesma transição de 83 ms, foco e padding do Button. No alto contraste os valores são os do Button padrão (dicionário `HighContrast`, mesmas chaves resolvidas).
 
 Exemplo: "Iniciar" na segunda linha do `buttons`. Verificado por pixel com o cursor real em cima (tema escuro, 100%): o fundo vai de 33 para 46 em toda a área do botão, inclusive no anel da borda, sem emenda. Bate com `#0FFFFFFF` sobre 33 (33 + 0.059 × 222 ≈ 46).
 
