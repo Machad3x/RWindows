@@ -220,11 +220,16 @@ pub fn style(t: &Theme, backdrop: bool) -> FlyoutStyle {
 /// Draws the presenter chrome over the whole `size` (DIPs): optional fill and
 /// the border, with `OverlayCornerRadius`.
 pub fn draw_chrome(s: &Surface, style: &FlyoutStyle, size: (f32, f32)) {
+    draw_chrome_r(s, style, size, theme::OVERLAY_RADIUS);
+}
+
+/// Same chrome with a different radius (ToolTip uses `ControlCornerRadius`).
+pub fn draw_chrome_r(s: &Surface, style: &FlyoutStyle, size: (f32, f32), radius: f32) {
     let r = rect(0.0, 0.0, size.0, size.1);
     if let Some(bg) = style.background {
-        s.fill_round(r, theme::OVERLAY_RADIUS, bg);
+        s.fill_round(r, radius, bg);
     }
-    s.stroke_round(r, theme::OVERLAY_RADIUS, style.border_width, style.border);
+    s.stroke_round(r, radius, style.border_width, style.border);
 }
 
 #[cfg(test)]
@@ -236,6 +241,15 @@ mod tests {
 
     fn target(x: f32, y: f32) -> D2D_RECT_F {
         rect(x, y, x + 100.0, y + 32.0)
+    }
+
+    #[test]
+    fn fade_should_have_no_offset_and_stop_after_the_opacity_fade() {
+        let t = Transition::fade();
+        assert_eq!(t.at(Duration::ZERO).offset, (0.0, 0.0));
+        assert_eq!(t.at(Duration::from_millis(100)).offset, (0.0, 0.0));
+        assert!(!t.at(Duration::from_millis(166)).running);
+        assert!(!t.at(Duration::from_millis(200)).running);
     }
 
     #[test]

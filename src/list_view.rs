@@ -37,6 +37,7 @@ pub struct ListView {
     pressed: Option<usize>,
     captured: bool,
     focused: bool,
+    key_pressed: bool,
 }
 
 impl ListView {
@@ -53,6 +54,7 @@ impl ListView {
             pressed: None,
             captured: false,
             focused: false,
+            key_pressed: false,
         }
     }
 
@@ -95,7 +97,12 @@ impl ListView {
     /// Scrolls to `offset`, clamped to the content.
     pub fn scroll_to(&mut self, offset: f32) {
         let max = (self.total_height() - self.viewport).max(0.0);
-        self.offset = offset.clamp(0.0, max);
+        let next = offset.clamp(0.0, max);
+        if next != self.offset {
+            // The row under the pointer changed; the app repaints the whole list.
+            self.hot = None;
+        }
+        self.offset = next;
     }
 
     /// Scrolls by `delta` DIPs.
@@ -208,6 +215,7 @@ impl ListView {
                 out.redraw = self.hot.is_some() || self.pressed.is_some();
                 self.hot = None;
                 self.pressed = None;
+                self.key_pressed = false;
                 if self.captured {
                     self.captured = false;
                     out.capture = Some(false);
@@ -220,22 +228,23 @@ impl ListView {
                 out.redraw = !self.focused;
                 self.focused = true;
             }
-            Input::KeyDown(key) => {
+            Input::KeyDown(key) if self.focused => {
                 let before = (self.offset, self.selected);
                 match key {
                     Key::Down => self.move_selection(1),
                     Key::Up => self.move_selection(-1),
                     Key::Home => self.select(0),
                     Key::End => self.select(self.items.len().saturating_sub(1)),
-                    _ => {}
+                    Key::Space | Key::Enter => self.key_pressed = true,
+                    _ => self.key_pressed = false,
                 }
                 out.redraw = (self.offset, self.selected) != before;
             }
-            Input::KeyUp(Key::Space | Key::Enter) => {
+            Input::KeyUp(Key::Space | Key::Enter) if self.key_pressed => {
                 out.clicked = self.selected.is_some();
-                out.redraw = self.pressed.take().is_some();
+                self.key_pressed = false;
             }
-            Input::KeyUp(_) => {}
+            Input::KeyDown(_) | Input::KeyUp(_) => {}
         }
         out
     }
@@ -350,6 +359,25 @@ mod tests {
         l.handle(Input::KeyDown(Key::Home), 0.0, 0.0, 200.0);
         assert_eq!(l.selected, Some(0));
         assert_eq!(l.offset(), 0.0);
+    }
+
+    #[test]
+    fn scrolling_should_invalidate_the_hover() {
+        let mut l = list(10);
+        l.hot = Some(3);
+        l.scroll_by(40.0);
+        assert_eq!(l.hot, None);
+    }
+
+    #[test]
+    fn keyboard_click_needs_focus_and_a_matching_key_down() {
+        let mut l = list(10);
+        l.select(2);
+        assert!(!l.handle(Input::KeyUp(Key::Space), 0.0, 0.0, 200.0).clicked);
+        l.handle(Input::Focus(crate::button::FocusKind::Keyboard), 0.0, 0.0, 200.0);
+        assert!(!l.handle(Input::KeyUp(Key::Space), 0.0, 0.0, 200.0).clicked);
+        l.handle(Input::KeyDown(Key::Space), 0.0, 0.0, 200.0);
+        assert!(l.handle(Input::KeyUp(Key::Space), 0.0, 0.0, 200.0).clicked);
     }
 
     #[test]

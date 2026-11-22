@@ -303,7 +303,7 @@ Exemplo: "Configurações", "Salvar", "Wi-Fi", "Mais opções" e "Menu" têm dic
 
 ## ListView (virtualização)
 
-`list_view::ListView` guarda os itens como texto e mantém só `offset`, `viewport` e seleção. `visible()` devolve o intervalo de índices que pode cruzar a janela, com uma linha de overscan; `arrange()` devolve retângulos apenas para essas linhas, e `hit()` converte o ponto usando o scroll sem percorrer a lista. Nenhum controle por item é criado e nada é medido por frame: o custo é proporcional à janela, não ao total de itens — o que interessa para a lista de apps do Iniciar.
+`list_view::ListView` guarda os itens como texto e mantém só `offset`, `viewport` e seleção. `visible()` devolve o intervalo de índices que pode cruzar a janela, com uma linha de overscan; `arrange()` devolve retângulos apenas para essas linhas, e `hit()` converte o ponto usando o scroll sem percorrer a lista. Nenhum controle por item é criado e nada é medido por frame: as linhas têm altura fixa e só são posicionadas — o custo é proporcional à janela, não ao total de itens — o que interessa para a lista de apps do Iniciar.
 
 | Regra | Fonte |
 |---|---|

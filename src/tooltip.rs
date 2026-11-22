@@ -4,7 +4,6 @@
 use std::ptr;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::UI::WindowsAndMessaging::{
     SPI_GETMESSAGEDURATION, SPI_GETMOUSEHOVERTIME, SystemParametersInfoW,
 };
@@ -253,11 +252,7 @@ impl ToolTip {
     /// border, `ControlCornerRadius`, then the Caption text. The same brushes as
     /// the flyout, but the smaller corner radius of `DefaultToolTipStyle`.
     pub fn draw(&self, s: &Surface, style: &FlyoutStyle, f: &Formats, t: &Theme) {
-        let r: D2D_RECT_F = rect(0.0, 0.0, self.size.0, self.size.1);
-        if let Some(bg) = style.background {
-            s.fill_round(r, theme::CONTROL_RADIUS, bg);
-        }
-        s.stroke_round(r, theme::CONTROL_RADIUS, style.border_width, style.border);
+        crate::flyout::draw_chrome_r(s, style, self.size, theme::CONTROL_RADIUS);
         s.text(&self.text, &f.caption,
             rect(PADDING.0, PADDING.1, self.size.0 - PADDING.2, self.size.1 - PADDING.3),
             t.text_primary);

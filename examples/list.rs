@@ -5,12 +5,12 @@
 use std::cell::RefCell;
 
 use fluent_win::backdrop;
-use fluent_win::button::{Input, Key};
+use fluent_win::button::{FocusKind, Input, Key};
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::list_view::{ITEM_HEIGHT, ListView};
 use fluent_win::panel::Formats;
 use fluent_win::theme::Theme;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::ValidateRect;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -25,9 +25,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
     LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
-    TranslateMessage, WM_DESTROY, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_DESTROY, WM_DPICHANGED,
+    WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_SETFOCUS, WM_SIZE, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{Result, w};
 
@@ -167,8 +167,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             a.list.scroll_by(-notches as f32 * ITEM_HEIGHT * 3.0);
             a.render()
         }),
+        WM_SETFOCUS => with_app(|a| a.handle(Input::Focus(FocusKind::Keyboard))),
         WM_KEYDOWN => with_app(|a| a.key(VIRTUAL_KEY(wp.0 as u16), true)),
         WM_KILLFOCUS => with_app(|a| a.handle(Input::Blur)),
+        WM_DPICHANGED => {
+            with_app(|a| a.surface.set_dpi(f32::from(loword(wp.0 as isize) as u16)));
+            let r = unsafe { &*(lp.0 as *const RECT) };
+            unsafe {
+                _ = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            with_app(|a| {
+                let (_, h) = a.surface.size();
+                a.list.set_viewport(LIST_HEIGHT.min(h - PAD).max(0.0));
+                a.render()
+            })
+        }
         WM_DESTROY => unsafe {
             PostQuitMessage(0);
             LRESULT(0)

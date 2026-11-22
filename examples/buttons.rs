@@ -27,7 +27,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, ValidateRect,
+    ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, ScreenToClient,
+    ValidateRect,
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -49,7 +50,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_CONTROL, VK_ESCAPE, VK_SUBTRACT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
+    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetMessageW, IDC_ARROW,
     LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
     SPI_SETHIGHCONTRAST, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_CAPTURECHANGED,
     WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
@@ -63,8 +64,11 @@ use windows::core::{PCWSTR, Result, w};
 
 const PAD: f32 = 32.0;
 const GAP: f32 = 8.0;
-/// Id of the single one-shot tooltip timer.
+/// Id of the single tooltip timer.
 const TIP_TIMER: usize = 1;
+/// While a tooltip is open, poll the cursor this often to enforce the safe zone
+/// even after it leaves the main window (the tooltip itself is click-through).
+const SAFE_POLL: Duration = Duration::from_millis(32);
 /// Pointer placement rect half-size in DIPs.
 const TIP_POINT: f32 = 8.0;
 
@@ -367,7 +371,20 @@ impl App {
     }
 
     fn tip_tick(&mut self) -> Result<()> {
-        let action = self.tip.tick(Instant::now());
+        let now = Instant::now();
+        let mut action = self.tip.tick(now);
+        if action.is_none() && self.tip.is_open() {
+            // The tooltip is a separate, click-through HWND: once the pointer
+            // leaves the main window no WM_MOUSEMOVE arrives, so poll the real
+            // cursor position to decide whether it left the safe zone.
+            let mut p = POINT::default();
+            unsafe {
+                if GetCursorPos(&mut p).is_ok() && ScreenToClient(self.hwnd, &mut p).as_bool() {
+                    let k = self.surface.scale();
+                    action = self.tip.pointer(p.x as f32 / k, p.y as f32 / k, now);
+                }
+            }
+        }
         self.tip_after(action)
     }
 
@@ -380,7 +397,7 @@ impl App {
                 Action::Close => {}
             }
         }
-        let delay = self.tip.next_delay(Instant::now());
+        let delay = if self.tip.is_open() { SAFE_POLL } else { self.tip.next_delay(Instant::now()) };
         let ms = (delay != Duration::MAX).then(|| delay.as_millis().min(u32::MAX as u128) as u32);
         // Pointer moves keep arriving while the same delay is armed: re-arm only on change.
         if ms != self.tip_timer {
@@ -431,7 +448,10 @@ impl App {
         let dips = |r: RECT| rect(r.left as f32 / k, r.top as f32 / k, r.right as f32 / k, r.bottom as f32 / k);
         let (target, container) = (dips(anchor_px), dips(work));
         let (w, h) = size;
-        let (r, placement) = flyout::place(target, w, h, container,
+        // Measured in the main window's DIPs; `place` works in the target
+        // monitor's DIPs. Keep the physical size (w*km) on any monitor.
+        let (pw, ph) = (w * km / k, h * km / k);
+        let (r, placement) = flyout::place(target, pw, ph, container,
             if tip { flyout::Placement::Top } else { flyout::Placement::Bottom });
         let origin = ((r.left * k).round() as i32, (r.top * k).round() as i32);
         let transition = if tip { flyout::Transition::fade() } else { flyout::Transition::open(placement) };
@@ -465,7 +485,7 @@ impl App {
         // The final rect, in main-window client DIPs, feeds the tooltip safe zone.
         Ok(tip.then(|| {
             let (x, y) = (origin.0 - o.x, origin.1 - o.y);
-            let (right, bottom) = (x + (w * k).round() as i32, y + (h * k).round() as i32);
+            let (right, bottom) = (x + (w * km).round() as i32, y + (h * km).round() as i32);
             rect(x as f32 / km, y as f32 / km, right as f32 / km, bottom as f32 / km)
         }))
     }
