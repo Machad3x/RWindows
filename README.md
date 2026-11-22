@@ -101,6 +101,8 @@ Exemplo: `cargo run --release --example buttons` (Tab/Shift+Tab, Espaço/Enter, 
 | Alto contraste, Checked: Highlight / HighlightText / HighlightText; Over: ButtonText / ButtonFace / ButtonText; Pressed: HighlightText / Highlight / HighlightText; Disabled igual ao Button | idem, dicionário `HighContrast` + `generic.xaml` |
 | Marcar/desmarcar também anima o fundo (83 ms) | `BrushTransition` do template |
 
+Exemplo: o `buttons` tem um "Wi-Fi" (começa ligado) numa segunda linha. Ao clicar dispara `ToggleState` alterado (`UiaRaiseAutomationPropertyChangedEvent`), não `Invoke_Invoked`, porque o peer do WinUI não tem Invoke. Verificado com cliente UIA real (`System.Windows.Automation`): tipo "botão", só `TogglePattern`, `Toggle()` três vezes dá On → Off → On → Off, e chegam os eventos `1->0`, `0->1`, `1->0`. Ligado aparece com o visual do accent. 51.6 MB com UIA ativo, código de saída 0.
+
 ### Alto contraste
 
 Com alto contraste ligado, `Theme::system()` devolve `Theme::high_contrast(SystemColors::current())`. O campo `Theme::high_contrast` guarda as cores do usuário e o `Button` troca a tabela de tokens pelo dicionário `HighContrast` do WinUI. Toda borda vira sólida de 1 DIP, sem gradiente de elevação.

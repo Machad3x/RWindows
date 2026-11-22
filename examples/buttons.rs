@@ -19,8 +19,10 @@ use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::ValidateRect;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
-    IRawElementProviderSimple, UIA_AutomationFocusChangedEventId, UIA_EVENT_ID, UIA_Invoke_InvokedEventId,
+    IRawElementProviderSimple, ToggleState_Off, ToggleState_On, UIA_AutomationFocusChangedEventId, UIA_EVENT_ID,
+    UIA_Invoke_InvokedEventId, UIA_ToggleToggleStatePropertyId, UiaRaiseAutomationPropertyChangedEvent,
     UiaClientsAreListening, UiaRaiseAutomationEvent, UiaReturnRawElementProvider, UiaRootObjectId,
 };
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -58,7 +60,16 @@ struct App {
     tracking: bool,
     uia: uia::Shared,
     /// UIA events to raise once the APP borrow ends (see `with_app`).
-    pending: Vec<(usize, UIA_EVENT_ID)>,
+    pending: Vec<(usize, UiaEvent)>,
+}
+
+/// A UIA notification queued until the APP borrow ends.
+#[derive(Clone, Copy)]
+enum UiaEvent {
+    /// `UiaRaiseAutomationEvent`.
+    Event(UIA_EVENT_ID),
+    /// `ToggleState` property changed to On (`true`) or Off.
+    Toggled(bool),
 }
 
 thread_local! {
@@ -80,7 +91,7 @@ impl App {
         for b in &self.buttons {
             b.draw(s, t, &self.label)?;
         }
-        s.text(&self.status, &self.body, rect(PAD, 96.0, PAD + 500.0, 120.0), t.text_secondary);
+        s.text(&self.status, &self.body, rect(PAD, 136.0, PAD + 500.0, 160.0), t.text_secondary);
         s.end()
     }
 
@@ -100,7 +111,7 @@ impl App {
 
     /// Queues a UIA event on button `i`; `with_app` raises it after the APP borrow
     /// ends, since raising may pump STA messages that would otherwise be dropped.
-    fn raise(&mut self, i: usize, event: UIA_EVENT_ID) {
+    fn raise(&mut self, i: usize, event: UiaEvent) {
         if !unsafe { UiaClientsAreListening() }.as_bool() {
             return;
         }
@@ -108,10 +119,21 @@ impl App {
         self.pending.push((i, event));
     }
 
-    /// Button `i` was invoked (pointer, keyboard or UI Automation).
+    /// Button `i` was invoked (pointer, keyboard or UI Automation); a toggle
+    /// button has already flipped `IsChecked`.
     fn clicked(&mut self, i: usize) {
-        self.status = format!("Clicou: {}", self.buttons[i].label);
-        self.raise(i, UIA_Invoke_InvokedEventId);
+        let b = &self.buttons[i];
+        let checked = b.is_checked();
+        self.status = match checked {
+            Some(on) => format!("{}: {}", b.label, if on { "ligado" } else { "desligado" }),
+            None => format!("Clicou: {}", b.label),
+        };
+        if let Some(on) = checked {
+            // ToggleButton raises ToggleState changed, not Invoked (its peer has no Invoke).
+            self.raise(i, UiaEvent::Toggled(on));
+        } else {
+            self.raise(i, UiaEvent::Event(UIA_Invoke_InvokedEventId));
+        }
     }
 
     fn animating(&self) -> bool {
@@ -179,7 +201,7 @@ impl App {
         }
         self.focused = to;
         if let Some(new) = to.filter(|_| changed) {
-            self.raise(new, UIA_AutomationFocusChangedEventId);
+            self.raise(new, UiaEvent::Event(UIA_AutomationFocusChangedEventId));
         }
         Ok(redraw)
     }
@@ -230,7 +252,17 @@ fn try_with_app(f: impl FnOnce(&mut App) -> Result<()>) -> bool {
     let Some(pending) = pending else { return false };
     if let Some(model) = UIA.with(|u| u.borrow().clone()) {
         for (i, event) in pending {
-            if let Err(e) = unsafe { UiaRaiseAutomationEvent(&uia::item(&model, i), event) } {
+            let provider = uia::item(&model, i);
+            let raised = match event {
+                UiaEvent::Event(id) => unsafe { UiaRaiseAutomationEvent(&provider, id) },
+                UiaEvent::Toggled(on) => {
+                    let state = |on| VARIANT::from(if on { ToggleState_On.0 } else { ToggleState_Off.0 });
+                    unsafe {
+                        UiaRaiseAutomationPropertyChangedEvent(&provider, UIA_ToggleToggleStatePropertyId, &state(!on), &state(on))
+                    }
+                }
+            };
+            if let Err(e) = raised {
                 eprintln!("fluent-win buttons: UIA event: {e}");
             }
         }
@@ -344,10 +376,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
         }
-        // Posted by IInvokeProvider::Invoke: run the click outside the UIA call.
+        // Posted by IInvokeProvider::Invoke / IToggleProvider::Toggle: run the click
+        // outside the UIA call (Button::invoke ignores a disabled button).
         WM_UIA_INVOKE => with_app_or_repost(hwnd, msg, wp, |a| {
             let i = wp.0;
-            if a.buttons.get(i).is_some_and(|b| b.visual() != fluent_win::button::Visual::Disabled) {
+            if a.buttons.get_mut(i).is_some_and(|b| b.invoke().clicked) {
                 a.clicked(i);
                 a.render()?;
             }
@@ -411,7 +444,7 @@ fn main() -> Result<()> {
         let k = GetDpiForSystem() as f32 / 96.0;
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Button"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
-            (520.0 * k) as i32, (200.0 * k) as i32, None, None, Some(instance.into()), None)?;
+            (520.0 * k) as i32, (240.0 * k) as i32, None, None, Some(instance.into()), None)?;
 
         let theme = Theme::system();
         if let Err(e) = backdrop::apply(hwnd, DWMSBT_MAINWINDOW, DWMWCP_ROUND, theme.dark) {
@@ -433,6 +466,10 @@ fn main() -> Result<()> {
             x += w + GAP;
             buttons.push(b);
         }
+        // Second row: a ToggleButton, like a Quick Settings tile.
+        let (w, h) = Button::desired_size(&surface, &label, "Wi-Fi")?;
+        let top = PAD + h + GAP * 2.0;
+        buttons.push(Button::toggle("Wi-Fi", rect(PAD, top, PAD + w, top + h), true));
 
         let mut app = App {
             hwnd, surface, theme, label, body, buttons,
