@@ -17,7 +17,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::ValidateRect;
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{
     IRawElementProviderSimple, UIA_AutomationFocusChangedEventId, UIA_EVENT_ID, UIA_Invoke_InvokedEventId,
@@ -28,12 +28,12 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+    GetFocus, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
     VIRTUAL_KEY, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
-    LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
+    LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
     SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_CAPTURECHANGED, WM_DESTROY,
     WM_DPICHANGED, WM_GETOBJECT,
     WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
@@ -56,6 +56,8 @@ struct App {
     status: String,
     tracking: bool,
     uia: uia::Shared,
+    /// UIA events to raise once the APP borrow ends (see `with_app`).
+    pending: Vec<(usize, UIA_EVENT_ID)>,
 }
 
 thread_local! {
@@ -89,15 +91,14 @@ impl App {
         }).collect();
     }
 
-    /// Raises a UIA event on button `i` (after syncing the model it will be read from).
-    fn raise(&self, i: usize, event: UIA_EVENT_ID) {
+    /// Queues a UIA event on button `i`; `with_app` raises it after the APP borrow
+    /// ends, since raising may pump STA messages that would otherwise be dropped.
+    fn raise(&mut self, i: usize, event: UIA_EVENT_ID) {
         if !unsafe { UiaClientsAreListening() }.as_bool() {
             return;
         }
         self.sync_uia();
-        if let Err(e) = unsafe { UiaRaiseAutomationEvent(&uia::item(&self.uia, i), event) } {
-            eprintln!("fluent-win buttons: UIA event: {e}");
-        }
+        self.pending.push((i, event));
     }
 
     /// Button `i` was invoked (pointer, keyboard or UI Automation).
@@ -208,16 +209,38 @@ impl App {
     }
 }
 
-/// Runs `f` on the app unless it is missing or already borrowed (re-entrant message).
-fn with_app(f: impl FnOnce(&mut App) -> Result<()>) {
-    APP.with(|cell| {
-        if let Ok(mut guard) = cell.try_borrow_mut()
-            && let Some(app) = guard.as_mut()
-            && let Err(e) = f(app)
-        {
+/// Runs `f` on the app, then raises the UIA events it queued outside the borrow.
+/// Returns false only when the app is already borrowed (a re-entrant message).
+fn try_with_app(f: impl FnOnce(&mut App) -> Result<()>) -> bool {
+    let pending = APP.with(|cell| {
+        let Ok(mut guard) = cell.try_borrow_mut() else { return None };
+        let Some(app) = guard.as_mut() else { return Some(Vec::new()) };
+        if let Err(e) = f(app) {
             eprintln!("fluent-win buttons: {e}");
         }
+        Some(std::mem::take(&mut app.pending))
     });
+    let Some(pending) = pending else { return false };
+    if let Some(model) = UIA.with(|u| u.borrow().clone()) {
+        for (i, event) in pending {
+            if let Err(e) = unsafe { UiaRaiseAutomationEvent(&uia::item(&model, i), event) } {
+                eprintln!("fluent-win buttons: UIA event: {e}");
+            }
+        }
+    }
+    true
+}
+
+/// [`try_with_app`] for messages that may be skipped when the app is busy.
+fn with_app(f: impl FnOnce(&mut App) -> Result<()>) {
+    try_with_app(f);
+}
+
+/// Re-posts a WM_UIA_* message that arrived while the app was busy, so it is not lost.
+fn with_app_or_repost(hwnd: HWND, msg: u32, wp: WPARAM, f: impl FnOnce(&mut App) -> Result<()>) {
+    if !try_with_app(f) {
+        unsafe { _ = PostMessageW(Some(hwnd), msg, wp, LPARAM(0)) };
+    }
 }
 
 fn loword(v: isize) -> i16 {
@@ -310,7 +333,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
         }
         // Posted by IInvokeProvider::Invoke: run the click outside the UIA call.
-        WM_UIA_INVOKE => with_app(|a| {
+        WM_UIA_INVOKE => with_app_or_repost(hwnd, msg, wp, |a| {
             let i = wp.0;
             if a.buttons.get(i).is_some_and(|b| b.visual() != fluent_win::button::Visual::Disabled) {
                 a.clicked(i);
@@ -319,13 +342,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             Ok(())
         }),
         // Posted by IRawElementProviderFragment::SetFocus (UIA already focused the window).
-        WM_UIA_FOCUS => with_app(|a| {
+        WM_UIA_FOCUS => with_app_or_repost(hwnd, msg, wp, |a| {
+            // Only when the window really has keyboard focus; otherwise keys go elsewhere
+            // and no WM_KILLFOCUS would ever clear the button's focus.
+            if unsafe { GetFocus() } != hwnd {
+                return Ok(());
+            }
             if wp.0 < a.buttons.len() && a.move_focus(Some(wp.0), FocusKind::Keyboard)? {
                 a.render()?;
             }
             Ok(())
         }),
         WM_DESTROY => unsafe {
+            // Providers a client still holds now answer UIA_E_ELEMENTNOTAVAILABLE.
+            UIA.with(|u| {
+                if let Some(m) = u.borrow().as_ref() {
+                    let mut m = m.borrow_mut();
+                    m.items.clear();
+                    m.focused = None;
+                }
+            });
             // Releases the provider map UIA keeps for MSAA clients (Learn: UiaReturnRawElementProvider).
             UiaReturnRawElementProvider(hwnd, WPARAM(0), LPARAM(0), None::<&IRawElementProviderSimple>);
             PostQuitMessage(0);
@@ -335,10 +371,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     LRESULT(0)
 }
 
+/// Balances `CoInitializeEx` with `CoUninitialize`.
+struct ComApartment;
+
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        unsafe { CoUninitialize() };
+    }
+}
+
 fn main() -> Result<()> {
     unsafe {
         // STA: UIA providers use ProviderOptions_UseComThreading and are called on this thread.
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+        // Declared first so it drops last, on every return path.
+        let _com = ComApartment;
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?;
         let instance = GetModuleHandleW(None)?;
         let class = w!("fluent-win-buttons");
@@ -381,6 +428,7 @@ fn main() -> Result<()> {
             status: "Tab para focar, Espaço/Enter para clicar".to_owned(),
             tracking: false,
             uia: Rc::new(RefCell::new(uia::Model::default())),
+            pending: Vec::new(),
         };
         UIA.with(|u| *u.borrow_mut() = Some(app.uia.clone()));
         app.render()?;

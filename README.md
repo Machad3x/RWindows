@@ -112,6 +112,14 @@ Integração (`examples/buttons.rs`): thread de UI em STA (`CoInitializeEx(COINI
 
 Verificado com um cliente UIA real (`System.Windows.Automation`): 4 botões encontrados, com tipo localizado "botão", ids únicos, IsEnabled/IsKeyboardFocusable corretos e retângulos em pixels de tela. `FromPoint` acerta o botão, `SetFocus` move o foco, Invoke clica (a tela mostra "Clicou: Salvar") e Invoke em botão desabilitado dá `ElementNotEnabledException`. Com UIA ativo: 51.0 MB, 18 threads (o runtime do UIA cria threads próprias), 0 ms de CPU parado.
 
+Robustez (revisão Opus):
+- Os eventos UIA entram numa fila e são disparados depois que o borrow do app termina, porque disparar pode bombear mensagens da STA. `WM_UIA_*` que chegam com o app ocupado são postados de novo, em vez de se perderem.
+- `WM_UIA_FOCUS` só move o foco se a janela tiver o foco do teclado (`GetFocus() == hwnd`).
+- O `WM_DESTROY` esvazia o modelo, então quem ainda segura um provider recebe `UIA_E_ELEMENTNOTAVAILABLE`, e não retângulos em (0,0) ou mensagens postadas para um HWND morto.
+- `CoUninitialize` via guarda de drop em todos os caminhos de saída.
+
+Verificado com um listener C# sobre `System.Windows.Automation`: chegam os eventos `Focus:Configurações`, `Focus:Salvar` e `Invoked:Salvar`.
+
 Observado e sem documentação: o cliente .NET chama `SetFocus` no botão antes do `Invoke`, então o foco vai para o botão invocado. O provider obedece o pedido. Não está confirmado se quem pede é o cliente gerenciado ou o UIA core.
 
 Pendente: evento `IsEnabled` alterado (o exemplo não muda isso em tempo de execução), evento de `BoundingRectangle` ao redimensionar e teste com Narrador e NVDA.
