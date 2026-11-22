@@ -22,6 +22,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, Tr
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
     LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassW, SWP_NOACTIVATE,
+    SPI_SETHIGHCONTRAST, WM_SYSCOLORCHANGE,
     SIZE_MINIMIZED, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_DESTROY, WM_DPICHANGED,
     WM_DWMCOLORIZATIONCOLORCHANGED, WM_MOUSEMOVE, WM_PAINT, WM_QUIT,
     WM_SETTINGCHANGE, WM_SIZE, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
@@ -59,6 +60,14 @@ impl App {
     fn render(&mut self) -> Result<()> {
         let (s, t) = (&mut self.surface, &self.theme);
         s.begin();
+        if let Some(c) = t.high_contrast {
+            // HighContrast SolidBackgroundFillColorBase = Window: opaque page, no Mica.
+            let (w, h) = s.size();
+            s.fill_round(rect(0.0, 0.0, w, h), 0.0, c.window);
+        }
+        // HighContrast AccentFillColorDefault = Window, invisible on the page: draw the
+        // placeholder icon in WindowText instead.
+        let icon = t.high_contrast.map_or(t.accent, |c| c.window_text);
         s.text("Fixado", &self.header, rect(PAD, 24.0, PAD + 300.0, 48.0), t.text_primary);
         for (i, name) in TILES.iter().enumerate() {
             let r = tile_rect(i);
@@ -70,7 +79,7 @@ impl App {
             }
             // Placeholder for the app icon (32x32, like Start).
             let x = (r.left + r.right) / 2.0 - 16.0;
-            s.fill_round(rect(x, r.top + 12.0, x + 32.0, r.top + 44.0), theme::CONTROL_RADIUS, t.accent);
+            s.fill_round(rect(x, r.top + 12.0, x + 32.0, r.top + 44.0), theme::CONTROL_RADIUS, icon);
             s.text(name, &self.label, rect(r.left + 4.0, r.top + 52.0, r.right - 4.0, r.bottom), t.text_primary);
         }
         s.end()
@@ -164,10 +173,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     SWP_NOZORDER | SWP_NOACTIVATE);
             }
         }
-        WM_SETTINGCHANGE
-            if lp.0 != 0
-                && unsafe { PCWSTR(lp.0 as *const u16).to_string() }
-                    .is_ok_and(|s| s == "ImmersiveColorSet") =>
+        // Theme/accent (ImmersiveColorSet), high contrast toggled (SPI_SETHIGHCONTRAST)
+        // or system colors changed (WM_SYSCOLORCHANGE).
+        WM_SYSCOLORCHANGE | WM_SETTINGCHANGE
+            if msg == WM_SYSCOLORCHANGE
+                || wp.0 == SPI_SETHIGHCONTRAST.0 as usize
+                || lp.0 != 0
+                    && unsafe { PCWSTR(lp.0 as *const u16).to_string() }
+                        .is_ok_and(|s| s == "ImmersiveColorSet") =>
         {
             with_app(App::reload_theme);
         }

@@ -182,7 +182,9 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 - [x] Acento e tema por API documentada (`UISettings`)
 - [x] Recuperar device perdido (reset de GPU, troca de driver, RDP)
 - [x] Button: UI Automation (fragmentos, Invoke, foco), verificado com cliente UIA real
-- [ ] Button: alto contraste; eventos UIA de IsEnabled/BoundingRectangle; teste com Narrador/NVDA
+- [x] Button: alto contraste (tabela `HighContrast` do WinUI; os dois exemplos pintam fundo Window e recarregam o tema ao vivo)
+- [ ] Alto contraste: verificar ligando o modo de verdade com os exemplos abertos
+- [ ] Button: eventos UIA de IsEnabled/BoundingRectangle; teste com Narrador/NVDA
 - [ ] Uma alocação UTF-16 por texto por frame
 - Fora do escopo: Mica no Win10/Win11 21H2 (a meta é o Win11 atual)
 
