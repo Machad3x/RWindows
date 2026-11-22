@@ -19,6 +19,7 @@ pub mod layout;
 pub mod list_view;
 pub mod menu_flyout;
 pub mod panel;
+pub mod scroll_viewer;
 pub mod slider;
 pub mod theme;
 pub mod toggle_switch;

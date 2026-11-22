@@ -36,7 +36,7 @@ O shell precisa disto antes de existir. Ordem sugerida (cada item: TDD, README, 
 - [x] **MenuFlyout** (`menu_flyout::MenuFlyout`): itens, separadores, atalho, habilitado/desabilitado, setas/Home/End/Espaço/Enter e clique com captura, no popup do `flyout`. Falta submenu, ícone, mnemonic, clique direito e UIA próprio.
 - [x] **ToolTip** (`tooltip::ToolTip` + `tooltip::Host`): pincéis/tipografia do `DefaultToolTipStyle`, atraso e duração lidos de `SPI_GETMOUSEHOVERTIME`/`SPI_GETMESSAGEDURATION`, fade e posicionamento sobre o ponteiro. Falta offsets, conteúdo rico e UIA próprio; SafeZone (casco convexo) já incluído.
 - [x] **ListView** (lista de apps do Iniciar, itens fixados), com virtualização. `list_view::ListView` pronto com desenho (`DefaultListViewItemStyle`), seleção, setas/Home/End e roda do mouse; exemplo `examples/list.rs` verificado visualmente. Faltam barra de rolagem desenhada, PageUp/PageDown, seleção múltipla, GridView e UIA.
-- [ ] **ScrollViewer** (rolagem por roda e barra).
+- [x] **ScrollViewer** (`scroll_viewer::ScrollBar`): barra vertical de 12 DIPs com thumb 8×30, arraste, page up/down e roda; integrada ao `examples/list.rs`. Falta barra horizontal, auto-ocultação do Win11, animações e UIA.
 - [ ] **TextBox** (busca do Iniciar): cursor, seleção, área de transferência, IME, UIA Text/Value. É o item mais caro.
 - [ ] **RadioButton, ProgressRing, ProgressBar**.
 - [ ] **Ícones reais**: extrair ícone de app e arquivo (`IShellItemImageFactory`) e desenhar como bitmap D2D, com cache.

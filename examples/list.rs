@@ -9,6 +9,7 @@ use fluent_win::button::{FocusKind, Input, Key};
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::list_view::{ITEM_HEIGHT, ListView};
 use fluent_win::panel::Formats;
+use fluent_win::scroll_viewer::{BAR_WIDTH, Hit, ScrollBar};
 use fluent_win::theme::Theme;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
@@ -47,6 +48,7 @@ struct App {
     theme: Theme,
     formats: Formats,
     list: ListView,
+    bar: ScrollBar,
     tracking: bool,
 }
 
@@ -76,7 +78,67 @@ fn with_app(f: impl FnOnce(&mut App) -> Result<()>) -> LRESULT {
 }
 
 impl App {
+    fn bar_track(&self) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+        let x = PAD + LIST_WIDTH + 8.0;
+        rect(x, PAD, x + BAR_WIDTH, PAD + LIST_HEIGHT)
+    }
+
+    /// True when the pointer was consumed by the scroll bar.
+    fn bar_input(&mut self, input: Input, x: f32, y: f32) -> Result<bool> {
+        let track = self.bar_track();
+        let content = self.list.total_height();
+        let viewport = self.list.viewport();
+        match input {
+            Input::PointerMove(..) => {
+                if let Some(offset) = self.bar.drag(y, track, content, viewport) {
+                    self.list.scroll_to(offset);
+                    self.render()?;
+                    return Ok(true);
+                }
+            }
+            Input::PointerDown(..) => {
+                match self.bar.hit(x, y, track, content, viewport, self.list.offset()) {
+                    Hit::Thumb => {
+                        self.bar.press(y, self.bar.thumb(track, content, viewport, self.list.offset()));
+                        unsafe { _ = SetCapture(self.hwnd) };
+                        return Ok(true);
+                    }
+                    Hit::Above => {
+                        self.list.scroll_by(-viewport);
+                        self.render()?;
+                        return Ok(true);
+                    }
+                    Hit::Below => {
+                        self.list.scroll_by(viewport);
+                        self.render()?;
+                        return Ok(true);
+                    }
+                    Hit::None => {}
+                }
+            }
+            Input::PointerUp(..) | Input::PointerLeave | Input::CaptureLost if self.bar.is_dragging() => {
+                self.bar.release();
+                unsafe { ReleaseCapture()? };
+                self.render()?;
+                return Ok(true);
+            }
+            Input::PointerUp(..) | Input::PointerLeave | Input::CaptureLost => {}
+            _ => {}
+        }
+        Ok(false)
+    }
+
     fn handle(&mut self, input: Input) -> Result<()> {
+        let xy = match input {
+            Input::PointerMove(x, y) | Input::PointerDown(x, y) | Input::PointerUp(x, y) => Some((x, y)),
+            Input::PointerLeave => Some((0.0, 0.0)),
+            _ => None,
+        };
+        if let Some((x, y)) = xy
+            && self.bar_input(input, x, y)?
+        {
+            return Ok(());
+        }
         let out = self.list.handle(input, PAD, PAD, LIST_WIDTH);
         match out.capture {
             Some(true) => unsafe { _ = SetCapture(self.hwnd) },
@@ -104,6 +166,7 @@ impl App {
     }
 
     fn render(&mut self) -> Result<()> {
+        let track = self.bar_track();
         let (s, t) = (&mut self.surface, &self.theme);
         s.begin();
         if let Some(c) = t.high_contrast {
@@ -111,6 +174,7 @@ impl App {
             s.fill_round(rect(0.0, 0.0, w, h), 0.0, c.window);
         }
         self.list.draw(s, t, &self.formats, PAD, PAD, LIST_WIDTH)?;
+        self.bar.draw(s, t, track, self.list.total_height(), self.list.viewport(), self.list.offset());
         let selected = self.list.selected
             .and_then(|i| self.list.item(i))
             .unwrap_or("nenhum");
@@ -216,7 +280,7 @@ fn main() -> Result<()> {
         );
         list.set_viewport(LIST_HEIGHT);
         APP.with(|cell| {
-            *cell.borrow_mut() = Some(App { hwnd, surface, theme, formats, list, tracking: false })
+            *cell.borrow_mut() = Some(App { hwnd, surface, theme, formats, list, bar: ScrollBar::new(), tracking: false })
         });
         with_app(App::render);
         let mut msg = MSG::default();

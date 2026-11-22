@@ -41,6 +41,7 @@ surface.end()?;
 | `menu_flyout` | `MenuFlyoutPresenter` com itens, separadores, atalhos e navegação por teclado |
 | `tooltip` | `ToolTip` com atraso e duração do sistema, posicionamento sobre o ponteiro e fade |
 | `list_view` | Núcleo virtualizado de `ListView`: só as linhas visíveis (mais overscan) são medidas e posicionadas |
+| `scroll_viewer` | Barra vertical do Win11: thumb 8×30, raio 3, `ControlStrongFillColorDefault`, arraste e page up/down |
 | `panel` | Roteamento comum: foco, captura, Tab, eventos (`trait Control`) |
 | `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, e eventos de propriedade |
 
@@ -314,6 +315,18 @@ Exemplo: "Configurações", "Salvar", "Wi-Fi", "Mais opções" e "Menu" têm dic
 O presenter está implementado em `ListView::draw` com os pincéis acima (incluindo o indicador de seleção de 4 DIPs em `AccentFillColorDefault`), e `ListView::handle` cobre ponteiro, foco e setas/Home/End. O exemplo `examples/list.rs` mostra 500 itens, seleção por clique/teclado e rolagem de 3 linhas por notch da roda; `Surface::with_clip` recorta o desenho ao viewport, como um `ScrollViewer`. Verificado visualmente no Windows real: linhas de 40 DIPs, hover/seleção discretos e nenhum vazamento para a área de status.
 
 Falta: barra de rolagem desenhada, PageUp/PageDown, seleção múltipla, arrastar, agrupamento/cabeçalhos, `GridView`, transições de seleção e UIA (SelectionItem/Selection pattern).
+
+## ScrollViewer
+
+`scroll_viewer::ScrollBar` calcula o thumb, faz hit test/arraste e desenha a barra vertical; o dono do conteúdo continua responsável pelo `offset` (a `ListView`, no exemplo). A barra aparece à direita das linhas e o clique no trilho dá uma página de rolagem.
+
+| Regra | Fonte |
+|---|---|
+| Largura 12 DIPs, thumb 8 DIPs com altura mínima 30, raio 3, inset 2, sem setas na lista | [`ScrollBar_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/ScrollBar_themeresources.xaml) (`ScrollBarSize`, `ScrollBarVerticalThumbMinHeight`, `ScrollBarVerticalThumbMinWidth`, `ScrollBarCornerRadius`, `ScrollBarThumbOffset`) |
+| Thumb `ControlStrongFillColorDefault` (hover/pressed usam o mesmo pincel); alto contraste usa `ButtonText`/`Highlight`; trilho transparente | idem |
+| Thumb proporcional a `viewport/content`, limitado ao mínimo, e arraste clampado a `[0, content − viewport]` | Decisão deste crate sobre `ScrollBar.Value` |
+
+Falta: barra horizontal, auto-ocultação do Windows 11 (a barra reduz após 2 s), animações de expandir/contrair (167/83 ms), setas de repeat button e UIA (RangeValue). No exemplo `examples/list.rs` a barra é sempre visível, o que é mais fácil de testar e inspecionar.
 
 ## Panel (roteamento comum)
 
