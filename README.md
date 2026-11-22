@@ -97,7 +97,7 @@ Exemplo: `cargo run --release --example buttons` (Tab/Shift+Tab, Espaço/Enter, 
 | Cada clique (ponteiro, teclado ou `invoke()`) inverte `IsChecked` antes de reportar o clique | `ToggleButton::OnClick` → `OnToggle` (`ToggleButton_Partial.cpp`) |
 | `invoke()` é o `OnClick` programático, usado pelo UI Automation; desabilitado, não faz nada | `AutomationToggleButtonOnToggle` chama `OnClick`; o peer recusa se `!IsEnabled` |
 | Estados visuais: Checked/CheckedPointerOver/CheckedPressed/CheckedDisabled, mesma prioridade do Button | `ToggleButton::ChangeVisualState` |
-| Fora do alto contraste, Checked* = pincéis do accent (`AccentFillColor*`, `TextOnAccentFillColor*`, `AccentControlElevationBorderBrush`, sem borda no Pressed/Disabled) e fundo `OuterBorderEdge` | [`ToggleButton_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/ToggleButton_themeresources.xaml) (`ToggleButtonCheckedStateBackgroundSizing`) |
+| Fora do alto contraste, Checked* = pincéis do accent (`AccentFillColor*`, `TextOnAccentFillColor*`, `AccentControlElevationBorderBrush`, sem borda no Pressed/Disabled). Fundo `OuterBorderEdge` em Checked/CheckedPointerOver/CheckedPressed; CheckedDisabled não define e fica `InnerBorderEdge` (anel transparente de 1 DIP) | [`ToggleButton_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/ToggleButton_themeresources.xaml) (`ToggleButtonCheckedStateBackgroundSizing`) |
 | Alto contraste, Checked: Highlight / HighlightText / HighlightText; Over: ButtonText / ButtonFace / ButtonText; Pressed: HighlightText / Highlight / HighlightText; Disabled igual ao Button | idem, dicionário `HighContrast` + `generic.xaml` |
 | Marcar/desmarcar também anima o fundo (83 ms) | `BrushTransition` do template |
 
@@ -145,7 +145,7 @@ Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As 
 | `Toggle()` posta `WM_UIA_INVOKE`, como o Invoke | O provider não pode mexer no botão (o app é dono). Limite: logo depois do `Toggle()`, o `ToggleState` ainda é o antigo até o app tratar a mensagem; o evento de propriedade avisa a troca. No WinUI o `OnClick` é síncrono | Decisão própria |
 | Dependência direta `windows-core` 0.62.2 | O `#[implement]` gera caminhos `::windows_core`; já estava na árvore | `Cargo.lock` |
 
-Testes: 16 com objetos COM reais numa janela oculta (navegação, propriedades, pixels de tela, hit test, foco, runtime ids, Invoke assíncrono e desabilitado, elemento removido).
+Testes: 21 com objetos COM reais numa janela oculta (navegação, propriedades, pixels de tela, hit test, foco, runtime ids, Invoke assíncrono e desabilitado, Toggle no lugar de Invoke, ToggleState, Toggle assíncrono e desabilitado, elemento removido).
 
 Integração (`examples/buttons.rs`): thread de UI em STA (`CoInitializeEx(COINIT_APARTMENTTHREADED)`); `WM_GETOBJECT` com `UiaRootObjectId` devolve a raiz; o modelo é sincronizado a cada render; eventos `AutomationFocusChanged` e `Invoke_Invoked` (só quando `UiaClientsAreListening`); `UiaReturnRawElementProvider(hwnd, 0, 0, NULL)` no `WM_DESTROY`.
 

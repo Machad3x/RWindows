@@ -333,6 +333,17 @@ impl Button {
         style_of(self.visual(), self.look(), t)
     }
 
+    /// `BackgroundSizing=OuterBorderEdge`: a Setter on `AccentButtonStyle`; on a
+    /// ToggleButton only the Checked, CheckedPointerOver and CheckedPressed states
+    /// set it (`CheckedDisabled` keeps the template's `InnerBorderEdge`).
+    fn outer_background(&self) -> bool {
+        match self.look() {
+            Look::Accent => true,
+            Look::Checked => self.visual() != Visual::Disabled,
+            Look::Default => false,
+        }
+    }
+
     fn look(&self) -> Look {
         match (self.checked, self.accent) {
             (Some(true), _) => Look::Checked,
@@ -353,8 +364,7 @@ impl Button {
         let background = lerp(from, style.background, self.bg.value());
         let radius = theme::CONTROL_RADIUS;
         let r = self.rect;
-        if self.look() != Look::Default {
-            // AccentButtonStyle and ToggleButton Checked*: BackgroundSizing=OuterBorderEdge.
+        if self.outer_background() {
             s.fill_round(r, radius, background);
         } else {
             // DefaultButtonStyle: BackgroundSizing=InnerBorderEdge. Inset by the border as
@@ -823,6 +833,25 @@ mod tests {
     fn checked_should_use_the_accent_brushes_outside_high_contrast() {
         let accent = Button::new("Ok", rect(0.0, 0.0, 80.0, 32.0), true).style(&Theme::DARK);
         assert_eq!(toggle(true).style(&Theme::DARK), accent);
+    }
+
+    #[test]
+    fn checked_background_should_reach_the_outer_border_edge() {
+        assert!(toggle(true).outer_background());
+    }
+
+    #[test]
+    fn checked_disabled_background_should_stay_inside_the_border() {
+        let mut b = toggle(true);
+        b.set_enabled(false);
+        assert!(!b.outer_background());
+    }
+
+    #[test]
+    fn accent_disabled_background_should_still_reach_the_outer_edge() {
+        let mut b = Button::new("Ok", rect(0.0, 0.0, 80.0, 32.0), true);
+        b.set_enabled(false);
+        assert!(b.outer_background());
     }
 
     #[test]
