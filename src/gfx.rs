@@ -14,7 +14,9 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
     D2D1CreateFactory, ID2D1DeviceContext, ID2D1Factory1, ID2D1SolidColorBrush,
 };
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D::{
+    D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP,
+};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS,
     D3D11_CREATE_DEVICE_SINGLETHREADED, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device,
@@ -61,13 +63,8 @@ impl Surface {
     /// so GDI does not paint an opaque layer under the composition visual.
     pub fn new(hwnd: HWND) -> Result<Self> {
         unsafe {
-            let mut d3d = None;
-            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, HMODULE::default(),
-                // Single-threaded device + no driver worker threads: fewer threads and less private memory.
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_SINGLETHREADED
-                    | D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS, None, D3D11_SDK_VERSION,
-                Some(&mut d3d), None, None)?;
-            let d3d: ID3D11Device = d3d.ok_or_else(|| Error::from(E_POINTER))?;
+            // WARP (software) when there is no usable GPU: headless VMs, broken drivers.
+            let d3d = d3d_device(D3D_DRIVER_TYPE_HARDWARE).or_else(|_| d3d_device(D3D_DRIVER_TYPE_WARP))?;
             let dxgi: IDXGIDevice = d3d.cast()?;
 
             let d2d: ID2D1Factory1 = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
@@ -236,6 +233,18 @@ pub const fn rect(left: f32, top: f32, right: f32, bottom: f32) -> D2D_RECT_F {
 
 fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
     D2D1_ROUNDED_RECT { rect, radiusX: radius, radiusY: radius }
+}
+
+fn d3d_device(driver: D3D_DRIVER_TYPE) -> Result<ID3D11Device> {
+    let mut d3d = None;
+    unsafe {
+        D3D11CreateDevice(None, driver, HMODULE::default(),
+            // Single-threaded device + no driver worker threads: fewer threads and less private memory.
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_SINGLETHREADED
+                | D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS, None, D3D11_SDK_VERSION,
+            Some(&mut d3d), None, None)?;
+    }
+    d3d.ok_or_else(|| Error::from(E_POINTER))
 }
 
 fn client_px(hwnd: HWND) -> Result<(u32, u32)> {
