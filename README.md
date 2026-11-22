@@ -267,7 +267,7 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 - [x] Button: alto contraste (tabela `HighContrast` do WinUI; os dois exemplos pintam fundo Window e recarregam o tema ao vivo)
 - [x] Alto contraste ligado de verdade com o `buttons` aberto (troca ao vivo)
 - [ ] Button: eventos UIA de IsEnabled/BoundingRectangle; teste com Narrador/NVDA
-- [ ] Uma alocação UTF-16 por texto por frame
+- [x] Texto sem alocação no heap por frame: rótulos de até 128 unidades UTF-16 são codificados na pilha (`with_wide`); só textos maiores alocam
 - Fora do escopo: Mica no Win10/Win11 21H2 (a meta é o Win11 atual)
 
 ## Licença

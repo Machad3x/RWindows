@@ -269,10 +269,9 @@ impl Surface {
 
     /// Size of `text` laid out on one line, in DIPs (width, line height).
     pub fn measure(&self, text: &str, format: &IDWriteTextFormat) -> Result<(f32, f32)> {
-        let wide: Vec<u16> = text.encode_utf16().collect();
         let mut m = DWRITE_TEXT_METRICS::default();
         unsafe {
-            let layout = self.dwrite.CreateTextLayout(&wide, format, f32::MAX, f32::MAX)?;
+            let layout = with_wide(text, |wide| self.dwrite.CreateTextLayout(wide, format, f32::MAX, f32::MAX))?;
             // Centered alignment in an f32::MAX box puts the text at MAX/2, where f32
             // precision collapses the width to 0: measure leading/near (layout only).
             layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
@@ -311,15 +310,34 @@ impl Surface {
         Ok(())
     }
 
-    /// Draws `text` laid out inside `rect`.
-    // shortcut: one UTF-16 allocation per call; cache IDWriteTextLayout per label if profiling shows it.
+    /// Draws `text` laid out inside `rect` (no heap allocation for short labels).
+    // shortcut: DrawText lays the text out on every call; cache IDWriteTextLayout per label if profiling shows it.
     pub fn text(&self, text: &str, format: &IDWriteTextFormat, rect: D2D_RECT_F, color: D2D1_COLOR_F) {
-        let wide: Vec<u16> = text.encode_utf16().collect();
-        unsafe {
+        with_wide(text, |wide| unsafe {
             self.brush.SetColor(&color);
-            self.ctx.DrawText(&wide, format, &rect, &self.brush,
+            self.ctx.DrawText(wide, format, &rect, &self.brush,
                 D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, DWRITE_MEASURING_MODE_NATURAL);
+        });
+    }
+}
+
+/// UTF-16 units encoded on the stack; longer text falls back to the heap.
+const STACK_UTF16: usize = 128;
+
+/// Runs `f` on `text` as UTF-16 without a heap allocation for labels up to
+/// [`STACK_UTF16`] units (every frame draws them all).
+fn with_wide<R>(text: &str, f: impl FnOnce(&[u16]) -> R) -> R {
+    // A UTF-8 byte never yields more than one UTF-16 unit, so len() bounds the count.
+    if text.len() <= STACK_UTF16 {
+        let mut buf = [0u16; STACK_UTF16];
+        let mut n = 0;
+        for unit in text.encode_utf16() {
+            buf[n] = unit;
+            n += 1;
         }
+        f(&buf[..n])
+    } else {
+        f(&text.encode_utf16().collect::<Vec<u16>>())
     }
 }
 
@@ -485,6 +503,25 @@ mod tests {
             exists
         };
         assert!(exists.as_bool());
+    }
+
+    #[test]
+    fn with_wide_should_encode_like_encode_utf16_on_stack_and_heap() {
+        let long = "x".repeat(STACK_UTF16 + 5);
+        for text in ["", "Configurações", "😀 emoji", long.as_str()] {
+            let expected: Vec<u16> = text.encode_utf16().collect();
+            assert_eq!(with_wide(text, <[u16]>::to_vec), expected);
+        }
+    }
+
+    #[test]
+    fn with_wide_should_not_allocate_for_a_short_label() {
+        // The slice handed to f points into the stack frame, not a fresh heap block:
+        // its address lies between two locals of this test's caller frame.
+        let marker = 0u8;
+        let addr = with_wide("Salvar", |w| w.as_ptr() as usize);
+        let here = &raw const marker as usize;
+        assert!(addr.abs_diff(here) < 64 * 1024, "slice at {addr:#x} is far from the stack ({here:#x})");
     }
 
     #[test]
