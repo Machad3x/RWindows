@@ -50,7 +50,7 @@ O shell precisa disto antes de existir. Ordem sugerida (cada item: TDD, README, 
 
 Modo de desenvolvimento **seguro**: o shell roda como um aplicativo comum, com o `explorer.exe` ainda vivo. Nada de registro nem de troca de shell ainda.
 
-- [ ] Janela da barra como **appbar** (`SHAppBarMessage`: `ABM_NEW`, `ABM_QUERYPOS`, `ABM_SETPOS`) reservando a área de trabalho.
+- [x] Janela da barra como **appbar** (`SHAppBarMessage`: `ABM_NEW`, `ABM_QUERYPOS`, `ABM_SETPOS`, `ABM_REMOVE` no Drop), reservando a borda inferior; `examples/taskbar.rs` verificado (0,984,1920,1032 px) com data/hora do sistema. Falta tratar `ABN_POSCHANGED` de outros appbars e multi-monitor.
 - [ ] **Lista de janelas**: `EnumWindows` + filtro de janelas "de tarefa" (visíveis, sem dono, sem `WS_EX_TOOLWINDOW`) e atualização por `RegisterShellHookWindow` (mensagem `SHELLHOOK`: `HSHELL_WINDOWCREATED`, `WINDOWDESTROYED`, `WINDOWACTIVATED`, `FLASH`, `REDRAW`, `MONITORCHANGED`, entre outros; confirmado no Learn).
 - [ ] Botões de tarefa: ícone, estado ativo, piscar, ativar/minimizar/restaurar ao clicar, menu de contexto da janela.
 - [ ] Relógio e data, com formato do sistema.

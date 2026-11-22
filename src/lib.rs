@@ -9,6 +9,7 @@
 //! - [`uia`]: UI Automation providers for custom-drawn controls.
 #![deny(missing_docs)]
 
+pub mod app_bar;
 pub mod backdrop;
 pub mod button;
 pub mod check_box;

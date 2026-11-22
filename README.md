@@ -29,6 +29,7 @@ surface.end()?;
 | Módulo | Função |
 |---|---|
 | `backdrop` | Mica/Acrylic, cantos arredondados e barra de título escura via DWM (`DwmSetWindowAttribute`) |
+| `app_bar` | Appbar Win32 (`SHAppBarMessage`) que reserva a borda inferior da área de trabalho |
 | `gfx` | Direct2D + DirectWrite sobre um swap chain de DirectComposition com alfa pré-multiplicado; texto, bordas de elevação, camadas de opacidade, recuperação de GPU perdida |
 | `layout` | Empilhamento horizontal/vertical de filhos medidos, com `Spacing` entre adjacentes, como o `StackPanel` do WinUI |
 | `theme` | Tokens de cor do WinUI, type ramp, raios de canto, acento do sistema e alto contraste |
@@ -435,6 +436,12 @@ Demo em release, Windows 11 (build 26300), janela de 4 tiles com Mica:
 | Tamanho do exe | 151 KB | — |
 
 A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UISettings` (WinRT) e `IDWriteFactory6` somaram cerca de 1 MB em relação à versão com registro (45.7 MB).
+
+## Fase 2 — barra de tarefas
+
+`app_bar::AppBar` registra a janela com `ABM_NEW`, chama `ABM_QUERYPOS` + `ABM_SETPOS` para reservar a borda inferior e chama `ABM_REMOVE` no `Drop`. `bottom_rect()` usa `MONITORINFO.rcWork`, que já exclui a barra do Explorer e outros appbars. O exemplo `examples/taskbar.exe` mostra a barra de 48 DIPs acima do taskbar do Explorer com data/hora no formato do usuário (`GetDateFormatEx`/`GetTimeFormatEx` com `LOCALE_NAME_USER_DEFAULT`), verificado no Windows 26H2: 0,984,1920,1032 px e texto "22/11/2026 22:21".
+
+`ABN_POSCHANGED` é tratado, mas o exemplo ignora a notificação causada pelo próprio `ABM_SETPOS` (quando o topo da janela já coincide com o fim da área de trabalho); sem essa checagem a barra sobe 48 px por notificação até sair da tela — foi observado e corrigido. Falta: lista de janelas (`EnumWindows` + shell hook), botões de tarefa com ícone/estado/clique/menu, vários monitores e bandeja. O Explorer continua vivo: nada de registro ou troca de shell.
 
 ## Verificações não feitas
 
