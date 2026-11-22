@@ -1,33 +1,33 @@
-//! WinUI buttons on Mica: default, accent and disabled. Tab / Shift+Tab move
-//! keyboard focus (focus ring), Space / Enter invoke, the mouse captures while
-//! pressed. Idle = blocked in GetMessageW; frames render only during transitions.
-//! UI Automation: the buttons appear to Narrator / NVDA / Inspect as Button
-//! elements with Invoke, through `fluent_win::uia`.
+//! WinUI controls on Mica: buttons (default, accent, disabled, toggle, subtle),
+//! a ToggleSwitch and CheckBoxes, routed by `fluent_win::panel::Panel`.
+//! Tab / Shift+Tab move keyboard focus (focus ring), Space / Enter invoke, the
+//! mouse captures while pressed. Idle = blocked in GetMessageW; frames render
+//! only during transitions. UI Automation: the controls appear to Narrator /
+//! NVDA / Inspect through `fluent_win::uia`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use fluent_win::backdrop;
-use fluent_win::button::{Button, FocusKind, Input, Key, Response, Visual};
-use fluent_win::check_box::{self, CheckBox, CheckState};
-use fluent_win::toggle_switch::ToggleSwitch;
-use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+use fluent_win::button::{Button, FocusKind, Input, Key};
+use fluent_win::check_box::{CheckBox, CheckState};
 use fluent_win::gfx::{Surface, rect};
-use fluent_win::theme::{self, Theme};
+use fluent_win::panel::{Control, Event, Formats, Outcome, Panel};
+use fluent_win::theme::Theme;
+use fluent_win::toggle_switch::ToggleSwitch;
 use fluent_win::uia::{self, WM_UIA_FOCUS, WM_UIA_INVOKE};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::ValidateRect;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
-    IRawElementProviderSimple, ToggleState, ToggleState_Indeterminate, ToggleState_Off, ToggleState_On,
-    UIA_AutomationFocusChangedEventId, UIA_BoundingRectanglePropertyId, UIA_EVENT_ID,
-    UIA_ButtonControlTypeId, UIA_CONTROLTYPE_ID, UIA_CheckBoxControlTypeId, UIA_Invoke_InvokedEventId, UIA_ToggleToggleStatePropertyId, UiaRaiseAutomationPropertyChangedEvent,
-    UiaClientsAreListening, UiaRaiseAutomationEvent, UiaReturnRawElementProvider, UiaRootObjectId,
+    IRawElementProviderSimple, ToggleState, ToggleState_Indeterminate, ToggleState_On,
+    UIA_AutomationFocusChangedEventId, UIA_BoundingRectanglePropertyId, UIA_EVENT_ID, UIA_Invoke_InvokedEventId,
+    UIA_ToggleToggleStatePropertyId, UiaClientsAreListening, UiaRaiseAutomationEvent,
+    UiaRaiseAutomationPropertyChangedEvent, UiaReturnRawElementProvider, UiaRootObjectId,
 };
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::{
@@ -40,12 +40,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
     LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
-    SPI_SETHIGHCONTRAST, WM_SYSCOLORCHANGE,
-    SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_CAPTURECHANGED, WM_DESTROY,
-    WM_DPICHANGED, WM_GETOBJECT,
-    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
-    WM_QUIT, WM_SETTINGCHANGE, WM_SIZE, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
-    WS_VISIBLE,
+    SPI_SETHIGHCONTRAST, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_CAPTURECHANGED,
+    WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE,
+    WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, Result, w};
 
@@ -57,122 +55,12 @@ struct App {
     surface: Surface,
     theme: Theme,
     formats: Formats,
-    buttons: Vec<Control>,
-    focused: Option<usize>,
+    panel: Panel,
     status: String,
     tracking: bool,
     uia: uia::Shared,
     /// UIA events to raise once the APP borrow ends (see `with_app`).
     pending: Vec<(usize, UiaEvent)>,
-}
-
-/// One focusable control of the window.
-enum Control {
-    Button(Button),
-    Switch(Box<ToggleSwitch>),
-    Check(CheckBox),
-}
-
-/// Text formats the controls draw with.
-struct Formats {
-    /// Centered Body (Button).
-    label: IDWriteTextFormat,
-    /// Left, vertically centered Body (ToggleSwitch).
-    switch: IDWriteTextFormat,
-    /// Left, top Body (CheckBox content, status line).
-    body: IDWriteTextFormat,
-    /// Segoe Fluent Icons at the CheckBox glyph size.
-    icon: IDWriteTextFormat,
-}
-
-impl Control {
-    fn handle(&mut self, input: Input) -> Response {
-        match self {
-            Control::Button(b) => b.handle(input),
-            Control::Switch(s) => s.handle(input),
-            Control::Check(c) => c.handle(input),
-        }
-    }
-
-    fn invoke(&mut self) -> Response {
-        match self {
-            Control::Button(b) => b.invoke(),
-            Control::Switch(s) => s.invoke(),
-            Control::Check(c) => c.invoke(),
-        }
-    }
-
-    fn draw(&self, s: &Surface, t: &Theme, f: &Formats) -> Result<()> {
-        match self {
-            Control::Button(b) => b.draw(s, t, &f.label),
-            Control::Switch(w) => w.draw(s, t, &f.switch),
-            Control::Check(c) => c.draw(s, t, &f.body, &f.icon),
-        }
-    }
-
-    fn animating(&self) -> bool {
-        match self {
-            Control::Button(b) => b.animating(),
-            Control::Switch(s) => s.animating(),
-            Control::Check(c) => c.animating(),
-        }
-    }
-
-    fn is_captured(&self) -> bool {
-        match self {
-            Control::Button(b) => b.is_captured(),
-            Control::Switch(s) => s.is_captured(),
-            Control::Check(c) => c.is_captured(),
-        }
-    }
-
-    fn enabled(&self) -> bool {
-        let visual = match self {
-            Control::Button(b) => b.visual(),
-            Control::Switch(s) => s.visual(),
-            Control::Check(c) => c.visual(),
-        };
-        visual != Visual::Disabled
-    }
-
-    /// UIA Name: the label, or the ToggleSwitch header.
-    fn name(&self) -> &str {
-        match self {
-            Control::Button(b) => &b.label,
-            Control::Switch(s) => &s.header,
-            Control::Check(c) => c.label(),
-        }
-    }
-
-    fn rect(&self) -> D2D_RECT_F {
-        match self {
-            Control::Button(b) => b.rect,
-            Control::Switch(s) => s.rect,
-            Control::Check(c) => c.rect(),
-        }
-    }
-
-    /// `IsChecked` / `IsOn` as a UIA ToggleState; `None` for a push button.
-    fn checked(&self) -> Option<ToggleState> {
-        let on_off = |on| if on { ToggleState_On } else { ToggleState_Off };
-        match self {
-            Control::Button(b) => b.is_checked().map(on_off),
-            Control::Switch(s) => Some(on_off(s.is_on())),
-            Control::Check(c) => Some(match c.state() {
-                CheckState::Checked => ToggleState_On,
-                CheckState::Unchecked => ToggleState_Off,
-                CheckState::Indeterminate => ToggleState_Indeterminate,
-            }),
-        }
-    }
-
-    /// UIA ControlType (`CheckBoxAutomationPeer` reports CheckBox; the others, Button).
-    fn control_type(&self) -> UIA_CONTROLTYPE_ID {
-        match self {
-            Control::Check(_) => UIA_CheckBoxControlTypeId,
-            _ => UIA_ButtonControlTypeId,
-        }
-    }
 }
 
 /// A UIA notification queued until the APP borrow ends.
@@ -202,9 +90,7 @@ impl App {
             let (w, h) = s.size();
             s.fill_round(rect(0.0, 0.0, w, h), 0.0, c.window);
         }
-        for b in &self.buttons {
-            b.draw(s, t, &self.formats)?;
-        }
+        self.panel.draw(s, t, &self.formats)?;
         s.text(&self.status, &self.formats.body, rect(PAD, 200.0, PAD + 500.0, 224.0), t.text_secondary);
         s.end()
     }
@@ -214,17 +100,11 @@ impl App {
         let mut m = self.uia.borrow_mut();
         m.hwnd = self.hwnd;
         m.scale = self.surface.scale();
-        m.focused = self.focused;
-        m.items = self.buttons.iter().map(|b| uia::Item {
-            name: b.name().to_owned(),
-            rect: b.rect(),
-            enabled: b.enabled(),
-            toggle: b.checked(),
-            control_type: b.control_type(),
-        }).collect();
+        m.focused = self.panel.focused();
+        m.items = self.panel.uia_items();
     }
 
-    /// Queues a UIA event on button `i`; `with_app` raises it after the APP borrow
+    /// Queues a UIA event on control `i`; `with_app` raises it after the APP borrow
     /// ends, since raising may pump STA messages that would otherwise be dropped.
     fn raise(&mut self, i: usize, event: UiaEvent) {
         if !unsafe { UiaClientsAreListening() }.as_bool() {
@@ -234,116 +114,52 @@ impl App {
         self.pending.push((i, event));
     }
 
-    /// Button `i` was invoked (pointer, keyboard or UI Automation); a toggle
-    /// button has already flipped `IsChecked`.
-    fn clicked(&mut self, i: usize) {
-        let b = &self.buttons[i];
-        let checked = b.checked();
-        self.status = match checked {
-            Some(s) if s == ToggleState_On => format!("{}: ligado", b.name()),
-            Some(s) if s == ToggleState_Indeterminate => format!("{}: indeterminado", b.name()),
-            Some(_) => format!("{}: desligado", b.name()),
-            None => format!("Clicou: {}", b.name()),
-        };
-        if let Some(new) = checked {
-            // The model still holds the state UIA last saw (synced at render).
-            let old = self.uia.borrow().items.get(i).and_then(|item| item.toggle).unwrap_or(ToggleState_Off);
-            // Toggle controls raise ToggleState changed, not Invoked (their peers have no Invoke).
-            self.raise(i, UiaEvent::Toggled(old, new));
-        } else {
-            self.raise(i, UiaEvent::Event(UIA_Invoke_InvokedEventId));
-        }
-    }
-
-    fn animating(&self) -> bool {
-        self.buttons.iter().any(Control::animating)
-    }
-
-    /// Sends `input` to the buttons and applies capture, focus and click effects.
-    /// While one button holds the capture, pointer input goes to it alone (as XAML
-    /// routes captured pointer events), so dragging across others does not light them.
-    fn dispatch(&mut self, input: Input) -> Result<()> {
-        let pointer = matches!(input, Input::PointerMove(..) | Input::PointerUp(..) | Input::PointerLeave);
-        let captor = self.buttons.iter().position(Control::is_captured).filter(|_| pointer);
-        let mut redraw = false;
-        for i in 0..self.buttons.len() {
-            if captor.is_some_and(|c| c != i) {
-                continue;
-            }
-            let r = self.buttons[i].handle(input);
-            redraw |= self.apply(i, r)?;
-        }
-        if redraw {
-            self.render()?;
-        }
-        Ok(())
-    }
-
-    fn capture(&self, request: Option<bool>) -> Result<()> {
-        match request {
+    /// Applies a panel outcome: capture, status line, UIA events, repaint.
+    fn apply(&mut self, out: Outcome) -> Result<()> {
+        match out.capture {
             Some(true) => unsafe { _ = SetCapture(self.hwnd) },
             // Our own WM_CAPTURECHANGED re-enters with_app and is skipped by the borrow check.
             Some(false) => unsafe { ReleaseCapture()? },
             None => {}
         }
-        Ok(())
-    }
-
-    fn apply(&mut self, i: usize, r: Response) -> Result<bool> {
-        self.capture(r.capture)?;
-        let mut redraw = r.redraw;
-        if r.take_focus {
-            redraw |= self.move_focus(Some(i), FocusKind::Pointer)?;
+        for event in &out.events {
+            match *event {
+                Event::Invoked(i) => {
+                    self.status = format!("Clicou: {}", self.panel.controls[i].name());
+                    self.raise(i, UiaEvent::Event(UIA_Invoke_InvokedEventId));
+                }
+                // Toggle controls raise ToggleState changed, not Invoked (their peers have no Invoke).
+                Event::Toggled { index, old, new } => {
+                    let state = if new == ToggleState_On {
+                        "ligado"
+                    } else if new == ToggleState_Indeterminate {
+                        "indeterminado"
+                    } else {
+                        "desligado"
+                    };
+                    self.status = format!("{}: {state}", self.panel.controls[index].name());
+                    self.raise(index, UiaEvent::Toggled(old, new));
+                }
+                Event::Focused(i) => self.raise(i, UiaEvent::Event(UIA_AutomationFocusChangedEventId)),
+            }
         }
-        if r.lost_focus && self.focused == Some(i) {
-            self.focused = None;
-        }
-        if r.clicked {
-            self.clicked(i);
-            redraw = true;
-        }
-        Ok(redraw)
-    }
-
-    /// Moves focus to `to`, blurring the previous button (which releases a capture
-    /// it held: Tab while the mouse is down). Returns true if anything changed.
-    fn move_focus(&mut self, to: Option<usize>, kind: FocusKind) -> Result<bool> {
-        let mut redraw = false;
-        if let Some(old) = self.focused.filter(|&old| Some(old) != to) {
-            let blur = self.buttons[old].handle(Input::Blur);
-            self.capture(blur.capture)?;
-            redraw |= blur.redraw;
-        }
-        let changed = self.focused != to;
-        if let Some(new) = to {
-            redraw |= self.buttons[new].handle(Input::Focus(kind)).redraw;
-        }
-        self.focused = to;
-        if let Some(new) = to.filter(|_| changed) {
-            self.raise(new, UiaEvent::Event(UIA_AutomationFocusChangedEventId));
-        }
-        Ok(redraw)
-    }
-
-    /// Tab order over enabled buttons (disabled ones are skipped, like IsTabStop on a disabled control).
-    fn tab(&mut self, back: bool) -> Result<()> {
-        let n = self.buttons.len();
-        let start = self.focused.unwrap_or(if back { 0 } else { n - 1 });
-        let next = (1..=n)
-            .map(|k| if back { (start + n - k) % n } else { (start + k) % n })
-            .find(|&i| self.buttons[i].enabled());
-        if self.move_focus(next, FocusKind::Keyboard)? {
+        if out.redraw {
             self.render()?;
         }
         Ok(())
     }
 
+    fn input(&mut self, input: Input) -> Result<()> {
+        let out = self.panel.handle(input);
+        self.apply(out)
+    }
+
     fn key(&mut self, vk: VIRTUAL_KEY, down: bool) -> Result<()> {
         if down && vk == VK_TAB {
             let back = unsafe { GetKeyState(i32::from(VK_SHIFT.0)) } < 0;
-            return self.tab(back);
+            let out = self.panel.tab(back);
+            return self.apply(out);
         }
-        let Some(i) = self.focused else { return Ok(()) };
         let key = match vk {
             VK_SPACE => Key::Space,
             VK_RETURN => Key::Enter,
@@ -351,11 +167,8 @@ impl App {
             VK_SUBTRACT => Key::Subtract,
             _ => Key::Other,
         };
-        let r = self.buttons[i].handle(if down { Input::KeyDown(key) } else { Input::KeyUp(key) });
-        if self.apply(i, r)? {
-            self.render()?;
-        }
-        Ok(())
+        let out = self.panel.key(key, down);
+        self.apply(out)
     }
 }
 
@@ -442,31 +255,29 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 a.tracking = true;
             }
             let (x, y) = point(a, lp);
-            a.dispatch(Input::PointerMove(x, y))
+            a.input(Input::PointerMove(x, y))
         }),
         WM_MOUSELEAVE => with_app(|a| {
             a.tracking = false;
-            a.dispatch(Input::PointerLeave)
+            a.input(Input::PointerLeave)
         }),
         WM_LBUTTONDOWN => with_app(|a| {
             let (x, y) = point(a, lp);
-            a.dispatch(Input::PointerDown(x, y))
+            a.input(Input::PointerDown(x, y))
         }),
         WM_LBUTTONUP => with_app(|a| {
             let (x, y) = point(a, lp);
-            a.dispatch(Input::PointerUp(x, y))
+            a.input(Input::PointerUp(x, y))
         }),
         WM_KEYDOWN => with_app(|a| a.key(VIRTUAL_KEY(wp.0 as u16), true)),
         WM_KEYUP => with_app(|a| a.key(VIRTUAL_KEY(wp.0 as u16), false)),
+        // Window lost focus: the focused control loses it too (OnLostFocus).
         WM_KILLFOCUS => with_app(|a| {
-            // Window lost focus: the focused button loses it too (OnLostFocus).
-            if a.move_focus(None, FocusKind::Keyboard)? {
-                a.render()?;
-            }
-            Ok(())
+            let out = a.panel.focus(None, FocusKind::Keyboard);
+            a.apply(out)
         }),
         // Another window took the capture: abandon any press (OnPointerCaptureLost).
-        WM_CAPTURECHANGED if lp.0 != hwnd.0 as isize => with_app(|a| a.dispatch(Input::CaptureLost)),
+        WM_CAPTURECHANGED if lp.0 != hwnd.0 as isize => with_app(|a| a.input(Input::CaptureLost)),
         WM_DPICHANGED => {
             with_app(|a| a.surface.set_dpi(f32::from(loword(wp.0 as isize) as u16)));
             // Outside with_app: SetWindowPos sends WM_SIZE synchronously.
@@ -477,7 +288,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             // Every control now has a new BoundingRectangle in screen pixels.
             with_app(|a| {
-                (0..a.buttons.len()).for_each(|i| a.raise(i, UiaEvent::Bounds));
+                (0..a.panel.controls.len()).for_each(|i| a.raise(i, UiaEvent::Bounds));
                 Ok(())
             });
         }
@@ -505,26 +316,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
         }
         // Posted by IInvokeProvider::Invoke / IToggleProvider::Toggle: run the click
-        // outside the UIA call (Button::invoke ignores a disabled button).
+        // outside the UIA call (controls ignore it while disabled).
         WM_UIA_INVOKE => with_app_or_repost(hwnd, msg, wp, |a| {
-            let i = wp.0;
-            if a.buttons.get_mut(i).is_some_and(|b| b.invoke().clicked) {
-                a.clicked(i);
-                a.render()?;
-            }
-            Ok(())
+            let out = a.panel.invoke(wp.0);
+            a.apply(out)
         }),
         // Posted by IRawElementProviderFragment::SetFocus (UIA already focused the window).
         WM_UIA_FOCUS => with_app_or_repost(hwnd, msg, wp, |a| {
             // Only when the window really has keyboard focus; otherwise keys go elsewhere
-            // and no WM_KILLFOCUS would ever clear the button's focus.
+            // and no WM_KILLFOCUS would ever clear the control's focus.
             if unsafe { GetFocus() } != hwnd {
                 return Ok(());
             }
-            if wp.0 < a.buttons.len() && a.move_focus(Some(wp.0), FocusKind::Keyboard)? {
-                a.render()?;
-            }
-            Ok(())
+            let out = a.panel.focus(Some(wp.0), FocusKind::Keyboard);
+            a.apply(out)
         }),
         WM_DESTROY => unsafe {
             // Providers a client still holds now answer UIA_E_ELEMENTNOTAVAILABLE.
@@ -553,6 +358,45 @@ impl Drop for ComApartment {
     }
 }
 
+/// The demo's controls, laid out by hand in three rows.
+fn controls(surface: &Surface, f: &Formats) -> Result<Vec<Box<dyn Control>>> {
+    let mut controls: Vec<Box<dyn Control>> = Vec::new();
+    // First row: auto-size each button from its label, left to right.
+    let mut x = PAD;
+    for (text, accent, enabled) in [("Configurações", false, true), ("Salvar", true, true),
+        ("Desabilitado", false, false), ("Accent off", true, false)]
+    {
+        let (w, h) = Button::desired_size(surface, &f.label, text)?;
+        let mut b = Button::new(text, rect(x, PAD, x + w, PAD + h), accent);
+        b.set_enabled(enabled);
+        x += w + GAP;
+        controls.push(Box::new(b));
+    }
+    // Second row: a ToggleButton (Quick Settings tile) and a SubtleButton (taskbar).
+    let (w, h) = Button::desired_size(surface, &f.label, "Wi-Fi")?;
+    let top = PAD + h + GAP * 2.0;
+    controls.push(Box::new(Button::toggle("Wi-Fi", rect(PAD, top, PAD + w, top + h), true)));
+    let x = PAD + w + GAP;
+    let (w, h) = Button::desired_size(surface, &f.label, "Iniciar")?;
+    controls.push(Box::new(Button::subtle("Iniciar", rect(x, top, x + w, top + h))));
+    // Third row: a ToggleSwitch with header (Settings style) and two CheckBoxes
+    // centered on the switch row, the second one three-state.
+    let top = top + h + GAP;
+    let switch = ToggleSwitch::layout(surface, &f.switch, "Modo avião", "Ativado", "Desativado", PAD, top, false)?;
+    let (mut x, cy) = (switch.rect.right + GAP * 3.0, switch.rect.bottom - 20.0);
+    controls.push(Box::new(switch));
+    for (text, state) in [("Lembrar de mim", None), ("Selecionar tudo", Some(CheckState::Indeterminate))] {
+        let (cw, ch) = CheckBox::desired_size(surface, &f.body, text)?;
+        let r = rect(x, cy - ch / 2.0, x + cw, cy + ch / 2.0);
+        controls.push(Box::new(match state {
+            None => CheckBox::new(text, r, true),
+            Some(state) => CheckBox::three_state(text, r, state),
+        }));
+        x += cw + GAP;
+    }
+    Ok(controls)
+}
+
 fn main() -> Result<()> {
     unsafe {
         // STA: UIA providers use ProviderOptions_UseComThreading and are called on this thread.
@@ -579,50 +423,11 @@ fn main() -> Result<()> {
             eprintln!("fluent-win buttons: backdrop unavailable: {e}");
         }
         let surface = Surface::new(hwnd)?;
-        let label = Button::text_format(&surface)?;
-        let body = surface.format(&theme::BODY)?;
-
-        // Auto-size each button from its label, left to right.
-        let mut x = PAD;
-        let mut buttons = Vec::new();
-        for (text, accent, enabled) in [("Configurações", false, true), ("Salvar", true, true),
-            ("Desabilitado", false, false), ("Accent off", true, false)]
-        {
-            let (w, h) = Button::desired_size(&surface, &label, text)?;
-            let mut b = Button::new(text, rect(x, PAD, x + w, PAD + h), accent);
-            b.set_enabled(enabled);
-            x += w + GAP;
-            buttons.push(Control::Button(b));
-        }
-        // Second row: a ToggleButton (Quick Settings tile) and a SubtleButton (taskbar).
-        let (w, h) = Button::desired_size(&surface, &label, "Wi-Fi")?;
-        let top = PAD + h + GAP * 2.0;
-        buttons.push(Control::Button(Button::toggle("Wi-Fi", rect(PAD, top, PAD + w, top + h), true)));
-        let x = PAD + w + GAP;
-        let (w, h) = Button::desired_size(&surface, &label, "Iniciar")?;
-        buttons.push(Control::Button(Button::subtle("Iniciar", rect(x, top, x + w, top + h))));
-        // Third row: a ToggleSwitch with header (Settings style).
-        let switch_text = ToggleSwitch::text_format(&surface)?;
-        let (header, on, off) = ("Modo avião", "Ativado", "Desativado");
-        let top = top + h + GAP;
-        let switch = ToggleSwitch::layout(&surface, &switch_text, header, on, off, PAD, top, false)?;
-        // A CheckBox beside it, centered on the switch row.
-        let icon = surface.icon_format(check_box::GLYPH_SIZE)?;
-        let text = "Lembrar de mim";
-        let (cw, ch) = CheckBox::desired_size(&surface, &body, text)?;
-        let (x, cy) = (switch.rect.right + GAP * 3.0, switch.rect.bottom - 20.0);
-        buttons.push(Control::Switch(Box::new(switch)));
-        buttons.push(Control::Check(CheckBox::new(text, rect(x, cy - ch / 2.0, x + cw, cy + ch / 2.0), true)));
-        // And a three-state one, starting Indeterminate.
-        let (x, text) = (x + cw + GAP, "Selecionar tudo");
-        let (cw, ch) = CheckBox::desired_size(&surface, &body, text)?;
-        let r = rect(x, cy - ch / 2.0, x + cw, cy + ch / 2.0);
-        buttons.push(Control::Check(CheckBox::three_state(text, r, CheckState::Indeterminate)));
+        let formats = Formats::new(&surface)?;
+        let panel = Panel::new(controls(&surface, &formats)?);
 
         let mut app = App {
-            hwnd, surface, theme, buttons,
-            formats: Formats { label, switch: switch_text, body, icon },
-            focused: None,
+            hwnd, surface, theme, formats, panel,
             status: "Tab para focar, Espaço/Enter para clicar".to_owned(),
             tracking: false,
             uia: Rc::new(RefCell::new(uia::Model::default())),
@@ -648,7 +453,7 @@ fn message_loop() -> Result<()> {
         loop {
             let mut animating = false;
             with_app(|a| {
-                animating = a.animating();
+                animating = a.panel.animating();
                 Ok(())
             });
             if animating || was_animating {
