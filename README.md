@@ -44,6 +44,7 @@ surface.end()?;
 | `scroll_viewer` | Barra vertical do Win11: thumb 8×30, raio 3, `ControlStrongFillColorDefault`, arraste e page up/down |
 | `radio_button` | RadioButton do Win11 com grupo de seleção única e glifo 12/14/10 |
 | `progress` | ProgressBar (trilho 1 DIP) e ProgressRing (traço 4 DIPs, determinado/indeterminado) |
+| `text_box` | TextBox de uma linha: cursor, seleção, clipboard Unicode e placeholder |
 | `panel` | Roteamento comum: foco, captura, Tab, eventos (`trait Control`) |
 | `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, e eventos de propriedade |
 
@@ -317,6 +318,12 @@ Exemplo: "Configurações", "Salvar", "Wi-Fi", "Mais opções" e "Menu" têm dic
 O presenter está implementado em `ListView::draw` com os pincéis acima (incluindo o indicador de seleção de 4 DIPs em `AccentFillColorDefault`), e `ListView::handle` cobre ponteiro, foco e setas/Home/End. O exemplo `examples/list.rs` mostra 500 itens, seleção por clique/teclado e rolagem de 3 linhas por notch da roda; `Surface::with_clip` recorta o desenho ao viewport, como um `ScrollViewer`. Verificado visualmente no Windows real: linhas de 40 DIPs, hover/seleção discretos e nenhum vazamento para a área de status.
 
 Falta: barra de rolagem desenhada, PageUp/PageDown, seleção múltipla, arrastar, agrupamento/cabeçalhos, `GridView`, transições de seleção e UIA (SelectionItem/Selection pattern).
+
+## TextBox
+
+`text_box::TextBox` guarda o conteúdo por índice de caracteres (seguro para acentos e emoji), com cursor, seleção, inserção, Backspace/Delete, setas/Home/End e Ctrl+A/C/X/V. O clipboard usa `CF_UNICODETEXT`, então copiar/colar preserva Unicode. O desenho usa `ControlFillColorDefault`, borda de 1 DIP `ControlStrokeColorDefault`, raio 4, padding 8,6, seleção em acento e caret piscando de 1 DIP. O exemplo `examples/progress.rs` aceita digitação por `WM_CHAR`; verificado com texto real.
+
+Falta: preview de composição IME, seleção por arraste do mouse, menu de contexto (Cut/Copy/Paste/Select All), validação de entrada e os padrões UIA Text/Value.
 
 ## RadioButton, ProgressBar e ProgressRing
 

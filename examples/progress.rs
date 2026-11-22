@@ -4,11 +4,12 @@
 use std::cell::RefCell;
 
 use fluent_win::backdrop;
-use fluent_win::button::Input;
+use fluent_win::button::{FocusKind, Input, Key};
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::panel::Formats;
 use fluent_win::progress::{ProgressBar, ProgressRing};
 use fluent_win::radio_button::{MIN_WIDTH, ROW_HEIGHT, RadioButton, check_one};
+use fluent_win::text_box::TextBox;
 use fluent_win::theme::Theme;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
@@ -17,11 +18,16 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetProcessDpiAwarenessContext,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, VK_A, VK_BACK, VK_C, VK_CONTROL, VK_DELETE, VK_END, VK_HOME, VK_LEFT, VK_RIGHT,
+    VK_V, VK_X, VIRTUAL_KEY,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
     KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage,
-    WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    WM_CHAR, WM_DESTROY, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_SETFOCUS,
+    WM_TIMER,
+    WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{Result, w};
 
@@ -40,7 +46,9 @@ struct App {
     radios: Vec<RadioButton>,
     bar: ProgressBar,
     ring: ProgressRing,
+    text: TextBox,
     time: f32,
+    blink: bool,
 }
 
 fn loword(v: isize) -> i16 {
@@ -78,6 +86,8 @@ impl App {
         let y = PAD + 3.0 * (ROW_HEIGHT + GAP) + GAP;
         self.bar.draw(s, t, rect(PAD, y, PAD + 240.0, y + 3.0));
         self.ring.draw(s, t, self.time);
+        self.text.draw(s, t, &self.formats,
+            rect(PAD, 250.0, PAD + 240.0, 282.0), self.blink)?;
         s.end()
     }
 
@@ -109,6 +119,37 @@ impl App {
         }
         self.render()
     }
+
+    fn char(&mut self, c: char) -> Result<()> {
+        if !c.is_control() {
+            self.text.insert(&c.to_string());
+        }
+        self.render()
+    }
+
+    fn key(&mut self, vk: VIRTUAL_KEY) -> Result<()> {
+        let ctrl = unsafe { GetKeyState(i32::from(VK_CONTROL.0)) } < 0;
+        if ctrl {
+            match vk {
+                VK_A => self.text.select_all(),
+                VK_C => { _ = self.text.copy(); }
+                VK_X => { _ = self.text.cut(); }
+                VK_V => { _ = self.text.paste(); }
+                _ => {}
+            }
+        } else {
+            match vk {
+                VK_BACK => self.text.backspace(),
+                VK_DELETE => self.text.delete(),
+                VK_LEFT => { self.text.handle(Input::KeyDown(Key::Left)); }
+                VK_RIGHT => { self.text.handle(Input::KeyDown(Key::Right)); }
+                VK_HOME => { self.text.handle(Input::KeyDown(Key::Home)); }
+                VK_END => { self.text.handle(Input::KeyDown(Key::End)); }
+                _ => {}
+            }
+        }
+        self.render()
+    }
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -125,8 +166,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             let k = a.surface.scale();
             a.input(f32::from(loword(lp.0)) / k, f32::from(hiword(lp.0)) / k, false)
         }),
+        WM_CHAR => with_app(|a| a.char(char::from_u32(wp.0 as u32).unwrap_or('\0'))),
+        WM_SETFOCUS => with_app(|a| {
+            a.text.handle(Input::Focus(FocusKind::Keyboard));
+            a.render()
+        }),
+        WM_KILLFOCUS => with_app(|a| {
+            a.text.handle(Input::Blur);
+            a.render()
+        }),
+        WM_KEYDOWN => with_app(|a| a.key(VIRTUAL_KEY(wp.0 as u16))),
         WM_TIMER if wp.0 == TIMER => with_app(|a| {
             a.time += 1.0 / 30.0;
+            a.blink = ((a.time * 1.6) as u32).is_multiple_of(2);
             a.render()
         }),
         WM_DESTROY => unsafe {
@@ -165,8 +217,10 @@ fn main() -> Result<()> {
         ];
         let bar = ProgressBar::new(60.0, 100.0);
         let ring = ProgressRing { center: (300.0, 200.0), radius: 24.0, value: None };
+        let mut text = TextBox::new("");
+        text.placeholder = "Digite algo...".to_owned();
         APP.with(|cell| {
-            *cell.borrow_mut() = Some(App { surface, theme, formats, radios, bar, ring, time: 0.0 })
+            *cell.borrow_mut() = Some(App { surface, theme, formats, radios, bar, ring, text, time: 0.0, blink: true })
         });
         with_app(App::render);
         _ = SetTimer(Some(hwnd), TIMER, 33, None);

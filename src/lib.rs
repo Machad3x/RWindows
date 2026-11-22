@@ -23,6 +23,7 @@ pub mod progress;
 pub mod radio_button;
 pub mod scroll_viewer;
 pub mod slider;
+pub mod text_box;
 pub mod theme;
 pub mod toggle_switch;
 pub mod tooltip;

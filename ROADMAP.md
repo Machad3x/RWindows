@@ -37,7 +37,7 @@ O shell precisa disto antes de existir. Ordem sugerida (cada item: TDD, README, 
 - [x] **ToolTip** (`tooltip::ToolTip` + `tooltip::Host`): pincéis/tipografia do `DefaultToolTipStyle`, atraso e duração lidos de `SPI_GETMOUSEHOVERTIME`/`SPI_GETMESSAGEDURATION`, fade e posicionamento sobre o ponteiro. Falta offsets, conteúdo rico e UIA próprio; SafeZone (casco convexo) já incluído.
 - [x] **ListView** (lista de apps do Iniciar, itens fixados), com virtualização. `list_view::ListView` pronto com desenho (`DefaultListViewItemStyle`), seleção, setas/Home/End e roda do mouse; exemplo `examples/list.rs` verificado visualmente. Faltam barra de rolagem desenhada, PageUp/PageDown, seleção múltipla, GridView e UIA.
 - [x] **ScrollViewer** (`scroll_viewer::ScrollBar`): barra vertical de 12 DIPs com thumb 8×30, arraste, page up/down e roda; integrada ao `examples/list.rs`. Falta barra horizontal, auto-ocultação do Win11, animações e UIA.
-- [ ] **TextBox** (busca do Iniciar): cursor, seleção, área de transferência, IME, UIA Text/Value. É o item mais caro.
+- [x] **TextBox** (busca do Iniciar): cursor, seleção, clipboard Unicode, setas/Home/End, Ctrl+A/C/X/V, placeholder e caret; exemplo `examples/progress.rs` verificado com digitação real. Falta preview de IME, arraste de seleção, menu de contexto e UIA Text/Value.
 - [x] **RadioButton, ProgressRing, ProgressBar**: estilos oficiais, grupo de seleção única, anel determinado/indeterminado e exemplo `examples/progress.rs` verificado visualmente. Faltam animações do glifo, estados Paused/Error e UIA.
 - [ ] **Ícones reais**: extrair ícone de app e arquivo (`IShellItemImageFactory`) e desenhar como bitmap D2D, com cache.
 - [ ] **UIA do conteúdo de flyouts e popups** (o Narrador hoje não lê o que está dentro).
