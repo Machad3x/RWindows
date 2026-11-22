@@ -15,6 +15,7 @@ use fluent_win::button::{Button, FocusKind, Input, Key};
 use fluent_win::check_box::{CheckBox, CheckState};
 use fluent_win::flyout;
 use fluent_win::gfx::{Surface, rect};
+use fluent_win::layout::{Orientation, Stack};
 use fluent_win::panel::{Control, Event, Formats, Outcome, Panel};
 use fluent_win::slider::{self, Slider};
 use fluent_win::theme::Theme;
@@ -615,34 +616,37 @@ impl Drop for ComApartment {
     }
 }
 
-/// The demo's controls, laid out by hand in three rows.
+/// The demo's controls, in three rows; the two button rows use `layout::Stack`.
 fn controls(surface: &Surface, f: &Formats) -> Result<Vec<Box<dyn Control>>> {
     let mut controls: Vec<Box<dyn Control>> = Vec::new();
-    // First row: auto-size each button from its label, left to right.
-    let mut x = PAD;
-    for (text, accent, enabled) in [("Configurações", false, true), ("Salvar", true, true),
-        ("Desabilitado", false, false), ("Accent off", true, false)]
-    {
-        let (w, h) = Button::desired_size(surface, &f.label, text)?;
-        let mut b = Button::new(text, rect(x, PAD, x + w, PAD + h), accent);
+    // First row: measured buttons, stacked left to right by `layout::Stack`.
+    let first = Stack::new(Orientation::Horizontal).with_spacing(GAP);
+    let row = [("Configurações", false, true), ("Salvar", true, true),
+        ("Desabilitado", false, false), ("Accent off", true, false)];
+    let sizes = row.iter()
+        .map(|&(text, _, _)| Button::desired_size(surface, &f.label, text))
+        .collect::<Result<Vec<_>>>()?;
+    for (&(text, accent, enabled), r) in row.iter().zip(first.arrange(&sizes, PAD, PAD)) {
+        let mut b = Button::new(text, r, accent);
         b.set_enabled(enabled);
-        x += w + GAP;
         controls.push(Box::new(b));
     }
     // Second row: a ToggleButton (Quick Settings tile) and a SubtleButton (taskbar).
-    let (w, h) = Button::desired_size(surface, &f.label, "Wi-Fi")?;
-    let top = PAD + h + GAP * 2.0;
-    controls.push(Box::new(Button::toggle("Wi-Fi", rect(PAD, top, PAD + w, top + h), true)));
-    let x = PAD + w + GAP;
-    let (w, h) = Button::desired_size(surface, &f.label, "Iniciar")?;
-    controls.push(Box::new(Button::subtle("Iniciar", rect(x, top, x + w, top + h))));
+    // Row height is the tallest child, like XAML; equal here since all use `f.label`.
+    let second = Stack::new(Orientation::Horizontal).with_spacing(GAP);
+    let top = PAD + first.desired_size(&sizes).1 + GAP * 2.0;
+    let row = ["Wi-Fi", "Iniciar", MORE];
+    let sizes = row.iter()
+        .map(|&text| Button::desired_size(surface, &f.label, text))
+        .collect::<Result<Vec<_>>>()?;
+    let rects = second.arrange(&sizes, PAD, top);
+    controls.push(Box::new(Button::toggle(row[0], rects[0], true)));
+    controls.push(Box::new(Button::subtle(row[1], rects[1])));
     // Opens a Flyout below itself.
-    let x = x + w + GAP;
-    let (w, h) = Button::desired_size(surface, &f.label, MORE)?;
-    controls.push(Box::new(Button::new(MORE, rect(x, top, x + w, top + h), false)));
+    controls.push(Box::new(Button::new(row[2], rects[2], false)));
     // Third row: a ToggleSwitch with header (Settings style) and two CheckBoxes
     // centered on the switch row, the second one three-state.
-    let top = top + h + GAP;
+    let top = top + second.desired_size(&sizes).1 + GAP;
     let switch = ToggleSwitch::layout(surface, &f.switch, "Modo avião", "Ativado", "Desativado", PAD, top, false)?;
     let (mut x, cy) = (switch.rect.right + GAP * 3.0, switch.rect.bottom - 20.0);
     controls.push(Box::new(switch));

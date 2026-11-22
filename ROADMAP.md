@@ -12,7 +12,7 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⬜ não começado · ❓ inc
 
 ## Estado atual (2026-11-22)
 
-219 testes passando, clippy limpo, ~48 MB de RAM e 0 ms de CPU parado no exemplo (o `explorer.exe` foi medido em 327,7 MB).
+228 testes passando, clippy limpo, ~48 MB de RAM e 0 ms de CPU parado no exemplo (o `explorer.exe` foi medido em 327,7 MB).
 
 | Área | Estado |
 |---|---|
@@ -22,6 +22,7 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⬜ não começado · ❓ inc
 | Controles: Button (padrão, accent, subtle, alternância), ToggleSwitch, CheckBox (3 estados), Slider | ✅ |
 | Flyout: posicionamento do WinUI, animação do sistema, popup acrílico, light dismiss | ✅ |
 | `Panel`: foco, captura, Tab, eventos | ✅ |
+| Layout: empilhamento horizontal/vertical com medida e `Spacing` do `StackPanel` | ✅ |
 | UI Automation: Invoke, Toggle, RangeValue, eventos de propriedade; Narrador testado | ✅ (NVDA ❓ não testado; conteúdo do flyout 🟡 sem provider) |
 | Shell (barra de tarefas, Iniciar, bandeja, desktop) | ⬜ |
 
@@ -31,7 +32,7 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⬜ não começado · ❓ inc
 
 O shell precisa disto antes de existir. Ordem sugerida (cada item: TDD, README, commit, revisão):
 
-- [ ] **Layout automático** (empilhamento horizontal/vertical com medida): hoje tudo é posicionado à mão.
+- [x] **Layout automático** (`layout::Stack`: empilhamento horizontal/vertical, `Spacing` e medida dos filhos). As fileiras de botões do exemplo já não são posicionadas à mão.
 - [ ] **MenuFlyout** (menu de contexto), em cima do `flyout` e do `Panel`.
 - [ ] **ToolTip**.
 - [ ] **ListView / GridView** (lista de apps do Iniciar, itens fixados), com virtualização.

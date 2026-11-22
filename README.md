@@ -30,6 +30,7 @@ surface.end()?;
 |---|---|
 | `backdrop` | Mica/Acrylic, cantos arredondados e barra de título escura via DWM (`DwmSetWindowAttribute`) |
 | `gfx` | Direct2D + DirectWrite sobre um swap chain de DirectComposition com alfa pré-multiplicado; texto, bordas de elevação, camadas de opacidade, recuperação de GPU perdida |
+| `layout` | Empilhamento horizontal/vertical de filhos medidos, com `Spacing` entre adjacentes, como o `StackPanel` do WinUI |
 | `theme` | Tokens de cor do WinUI, type ramp, raios de canto, acento do sistema e alto contraste |
 | `easing` | Curvas e durações de animação do Win11, mais um `Tween` |
 | `button` | Button do WinUI (padrão, accent, subtle, ToggleButton) e a máquina de entrada que os outros controles reaproveitam |
@@ -68,6 +69,29 @@ Cada decisão registra o motivo e a fonte. "Não verificado" quer dizer que vem 
 | Tema e acento via `UISettings.GetColorValue` (WinRT), não pelo registro | API documentada e a mesma fonte que o WinUI usa. `AccentPalette` no registro não tem documentação. Modo escuro = foreground claro (`IsColorLight`). Acento: `AccentLight2` no escuro, `AccentDark1` no claro (`AccentFillColorDefault`). O windows-core entra no MTA sozinho quando recebe `CO_E_NOTINITIALIZED` | [Apply Windows themes](https://learn.microsoft.com/windows/apps/desktop/modernize/ui/apply-windows-themes), [UIColorType](https://learn.microsoft.com/uwp/api/windows.ui.viewmanagement.uicolortype), [Theming: accent palette](https://learn.microsoft.com/windows/apps/develop/ui/theming#accent-color-palette), WinUI `Common_themeresources_any.xaml` |
 | Constantes `DARK.accent` #60CDFF / `LIGHT.accent` #005FB8 | Só usadas se o WinRT falhar. São os valores de design do WinUI. O Learn não publica as variações do azul padrão do Win11 | Não verificado |
 | **Sem** `LineHeight` forçado: a linha usa as métricas naturais da fonte | Os estilos do WinUI não definem `LineHeight` (só `LineStackingStrategy=MaxHeight`), então o Win11 real usa a altura natural. Os valores 16/20/28… são da especificação de design | [`TextBlock_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/TextBlock_themeresources.xaml), [LineStackingStrategy](https://learn.microsoft.com/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.linestackingstrategy) |
+| `layout::Stack` só posiciona; quem mede é o controle (`Button::desired_size` e cia.) | Mantém a medição de texto no DirectWrite e evita um segundo dono do tamanho. No eixo cruzado cada filho guarda o próprio tamanho | Analogia com [`StackPanel`](https://learn.microsoft.com/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.stackpanel); a regra do eixo cruzado é uma decisão deste crate, não uma equivalência ao WinUI |
+
+## Layout
+
+`layout::Stack` é o empilhamento de um eixo do WinUI. Recebe os tamanhos já medidos dos filhos e devolve um `D2D_RECT_F` para cada um:
+
+```rust
+let row = Stack::new(Orientation::Horizontal).with_spacing(GAP);
+let sizes = labels.iter().map(|t| Button::desired_size(surface, &formats.label, t))
+    .collect::<Result<Vec<_>>>()?;
+for (control, r) in labels.iter().zip(row.arrange(&sizes, PAD, PAD)) { /* ... */ }
+let row_height = row.desired_size(&sizes).1;
+```
+
+| Regra | Fonte |
+|---|---|
+| `Orientation::Vertical` empilha de cima para baixo (padrão do `StackPanel`); `Horizontal` da esquerda para a direita | [`StackPanel`](https://learn.microsoft.com/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.stackpanel) |
+| `Spacing` é a distância uniforme **entre** itens adjacentes, aplicada no eixo da orientação; não há espaço antes do primeiro nem depois do último | [`StackPanel.Spacing`](https://learn.microsoft.com/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.stackpanel.spacing) |
+| `desired_size` soma o eixo da pilha e toma o maior filho no eixo cruzado; pilha vazia mede `(0, 0)` | Decisão deste crate, inspirada no arrange do `StackPanel` (a fonte oficial descreve o painel, não a fórmula linha a linha) |
+| Cada filho mantém o próprio tamanho no eixo cruzado (não estica) | Decisão deste crate: o `Stack` não tem `Alignment` nem constraints. Analogia: `Stretch` é o padrão no WinUI, mas com `Width`/`Height` calculados o layout age como `Left`/`Top` — [`FrameworkElement.HorizontalAlignment`](https://learn.microsoft.com/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.frameworkelement.horizontalalignment) |
+| Sem arredondamento dentro do `Stack`: os controles usados no exemplo já devolvem medidas inteiras e a origem é escolhida pelo chamador | Evita arredondar duas vezes; segue a decisão de retângulos alinhados ao pixel físico acima |
+
+Exemplo: `cargo run --release --example buttons` (as duas primeiras fileiras usam `Stack`). Testes em `src/layout.rs`.
 
 ## Button
 
