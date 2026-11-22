@@ -11,6 +11,7 @@ use fluent_win::flyout;
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::panel::Formats;
 use fluent_win::theme::Theme;
+use fluent_win::window_list::{self, ShellHook, WindowInfo};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::{
@@ -26,15 +27,19 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Shell::ABN_POSCHANGED;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowRect, IDC_ARROW,
-    KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SetTimer, SetWindowPos,
-    SWP_NOACTIVATE, SWP_NOZORDER, TranslateMessage, WM_APP, WM_DESTROY, WM_PAINT,
-    WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP, WS_VISIBLE,
+    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowRect,
+    HSHELL_HIGHBIT, HSHELL_MONITORCHANGED, HSHELL_REDRAW, HSHELL_WINDOWACTIVATED,
+    HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW, IsIconic, KillTimer, LoadCursorW, MSG,
+    PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
+    SW_MINIMIZE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, TranslateMessage, WM_APP, WM_DESTROY,
+    WM_LBUTTONDOWN, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{Result, w};
 
 const APPBAR_CALLBACK: u32 = WM_APP + 0x60;
 const CLOCK_TIMER: usize = 1;
+/// `HSHELL_FLASH` is `HSHELL_REDRAW` with the high bit set (winuser.h).
+const HSHELL_FLASH: u32 = HSHELL_REDRAW | HSHELL_HIGHBIT;
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -47,6 +52,10 @@ struct App {
     formats: Formats,
     bar: AppBar,
     backdrop: bool,
+    /// Kept alive so `Drop` deregisters the shell hook.
+    _hook: ShellHook,
+    windows: Vec<WindowInfo>,
+    active: Option<HWND>,
 }
 
 fn with_app(f: impl FnOnce(&mut App) -> Result<()>) -> LRESULT {
@@ -109,9 +118,56 @@ impl App {
         self.render()
     }
 
+    /// Rebuilds the task-button list from all top-level windows.
+    fn refresh_windows(&mut self) {
+        self.windows = window_list::enumerate()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|info| info.hwnd != self.hwnd && !info.title.is_empty())
+            .collect();
+    }
+
+    /// Handles the dynamic SHELLHOOK notification.
+    fn shell_event(&mut self, code: usize, hwnd: HWND) -> Result<()> {
+        let refresh = matches!(code as u32,
+            HSHELL_WINDOWCREATED | HSHELL_WINDOWDESTROYED | HSHELL_REDRAW | HSHELL_FLASH
+            | HSHELL_MONITORCHANGED);
+        if code as u32 == HSHELL_WINDOWACTIVATED {
+            self.active = Some(hwnd);
+        } else if !refresh {
+            return Ok(());
+        }
+        self.refresh_windows();
+        self.render()
+    }
+
+    /// Activates a task button, or minimizes the window when it is already active.
+    fn activate_button(&mut self, x: f32) -> Result<()> {
+        let width = 160.0;
+        let gap = 8.0;
+        let index = ((x - 16.0) / (width + gap)) as isize;
+        let Some(info) = self.windows.get(index.max(0) as usize) else { return Ok(()) };
+        if index < 0 || x - 16.0 - index as f32 * (width + gap) > width {
+            return Ok(());
+        }
+        let hwnd = info.hwnd;
+        unsafe {
+            if self.active == Some(hwnd) && !IsIconic(hwnd).as_bool() {
+                _ = ShowWindow(hwnd, SW_MINIMIZE);
+            } else {
+                _ = ShowWindow(hwnd, SW_RESTORE);
+                _ = SetForegroundWindow(hwnd);
+            }
+        }
+        Ok(())
+    }
+
     fn render(&mut self) -> Result<()> {
         let (w, h) = self.surface.size();
         let style = flyout::style(&self.theme, self.backdrop);
+        let buttons: Vec<(String, bool)> = self.windows.iter()
+            .map(|info| (info.title.clone(), self.active == Some(info.hwnd)))
+            .collect();
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
         s.begin();
         s.with_opacity(1.0, |s| {
@@ -121,6 +177,23 @@ impl App {
         if let Some(c) = t.high_contrast {
             s.fill_round(rect(0.0, 0.0, w, h), 0.0, c.window);
         }
+        let button_width = 160.0;
+        let button_gap = 8.0;
+        let task_area = rect(16.0, 4.0, w - 260.0, h - 4.0);
+        s.with_clip(task_area, |s| {
+            for (i, (title, active)) in buttons.iter().enumerate() {
+                let x = 16.0 + i as f32 * (button_width + button_gap);
+                let r = rect(x, 4.0, x + button_width, h - 4.0);
+                if *active {
+                    s.fill_round(r, 4.0, t.subtle_hover);
+                    s.fill_round(rect(x, r.bottom - 3.0, x + button_width, r.bottom), 1.0, t.accent);
+                }
+                let label: String = title.chars().take(20).collect();
+                s.with_clip(r, |s| {
+                    s.text_no_wrap(&label, &f.switch, rect(x + 10.0, r.top, r.right - 10.0, r.bottom), t.text_primary);
+                });
+            }
+        });
         let (time, date) = locale_text();
         let text = format!("{date}  {time}");
         let label_w = 220.0;
@@ -137,6 +210,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             with_app(App::render)
         }
         APPBAR_CALLBACK if wp.0 as u32 == ABN_POSCHANGED => with_app(App::reposition),
+        WM_LBUTTONDOWN => with_app(|a| {
+            let k = a.surface.scale();
+            a.activate_button((lp.0 & 0xffff) as f32 / k)
+        }),
         WM_TIMER if wp.0 == CLOCK_TIMER => with_app(App::render),
         WM_DESTROY => unsafe {
             _ = KillTimer(Some(hwnd), CLOCK_TIMER);
@@ -145,6 +222,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             PostQuitMessage(0);
             LRESULT(0)
         },
+        _ if msg == window_list::shellhook_message() => with_app(|a| {
+            a.shell_event(wp.0, HWND(lp.0 as *mut core::ffi::c_void))
+        }),
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
 }
@@ -171,8 +251,12 @@ fn main() -> Result<()> {
         let surface = Surface::new(hwnd)?;
         let formats = Formats::new(&surface)?;
         let bar = AppBar::new(hwnd, APPBAR_CALLBACK)?;
+        let hook = ShellHook::new(hwnd)?;
+        let windows = window_list::enumerate()?;
         APP.with(|cell| {
-            *cell.borrow_mut() = Some(App { hwnd, surface, theme, formats, bar, backdrop })
+            *cell.borrow_mut() = Some(App {
+                hwnd, surface, theme, formats, bar, backdrop, _hook: hook, windows, active: None,
+            })
         });
         with_app(App::reposition);
         _ = SetTimer(Some(hwnd), CLOCK_TIMER, Duration::from_secs(1).as_millis() as u32, None);
