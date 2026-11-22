@@ -54,7 +54,7 @@ Modo de desenvolvimento **seguro**: o shell roda como um aplicativo comum, com o
 - [x] **Lista de janelas**: `window_list::enumerate()` com `EnumWindows` + filtro (visíveis, sem dono, sem `WS_EX_TOOLWINDOW`/`WS_EX_NOACTIVATE`); `ShellHook` com `RegisterShellHookWindow` e mensagem `"SHELLHOOK"`, desregistrado no Drop. Botões com estado ativo e clique ativar/minimizar verificado no Windows real. Ícones reais por executável da janela verificados no Windows. Menu de contexto Fluent (`MenuFlyout` numa janela popup própria) verificado na tela.
 - [x] Botões de tarefa: ícone real do executável, estado ativo, ativar/minimizar/restaurar ao clicar e menu de contexto (Restaurar/Minimizar/Fechar), verificados no Windows. Falta: piscar (HSHELL_FLASH).
 - [ ] Relógio e data, com formato do sistema.
-- [ ] Vários monitores e DPI por monitor.
+- [x] Vários monitores: uma barra/appbar por monitor, verificada nas duas telas desta máquina. Falta DPI misto (ambos os monitores reportam 96 DPI aqui).
 - [ ] Hospedar a **área de notificação** (bandeja). ❓ Como o `Shell_NotifyIcon` chega ao shell, qual janela o recebe e como reenviar os ícones quando a barra é recriada (mensagem `TaskbarCreated`): o Learn só diz "envia uma mensagem para a área de status da barra de tarefas"; o resto precisa ser verificado.
 - [ ] Barra de tarefas com o `explorer.exe` desligado numa **conta de teste ou VM** (ver "Segurança e recuperação").
 

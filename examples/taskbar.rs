@@ -21,8 +21,8 @@ use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WPARA
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
-    MonitorFromPoint, MonitorFromRect, ValidateRect,
+    ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, MonitorFromRect, MonitorFromWindow, ValidateRect,
 };
 use windows::Win32::Globalization::{
     DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx, TIME_NOSECONDS,
@@ -33,7 +33,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::SystemInformation::GetSystemTime;
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, GetDpiForSystem, MDT_EFFECTIVE_DPI,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
     SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Accessibility::{
@@ -45,7 +45,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     GetWindowRect, GetWindowThreadProcessId, HSHELL_HIGHBIT, HSHELL_MONITORCHANGED, HSHELL_REDRAW,
     HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW, IsIconic,
     IsWindow, KillTimer, LoadCursorW, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
@@ -56,7 +56,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_POPUP, WS_VISIBLE,
 };
-use windows::core::{Result, w};
+use windows::core::{BOOL, Result, w};
 
 const APPBAR_CALLBACK: u32 = WM_APP + 0x60;
 const CLOCK_TIMER: usize = 1;
@@ -64,7 +64,8 @@ const CLOCK_TIMER: usize = 1;
 const HSHELL_FLASH: u32 = HSHELL_REDRAW | HSHELL_HIGHBIT;
 
 thread_local! {
-    static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+    /// One App per monitor; each owns its appbar window and surface.
+    static APP: RefCell<Vec<App>> = const { RefCell::new(Vec::new()) };
     static MENU: RefCell<Option<MenuPopup>> = const { RefCell::new(None) };
     /// Kept outside MENU: WM_GETOBJECT can arrive while MENU is borrowed.
     static MENU_UIA: RefCell<Option<uia::Shared>> = const { RefCell::new(None) };
@@ -213,11 +214,19 @@ struct App {
     formats: Formats,
     bar: AppBar,
     backdrop: bool,
-    /// Kept alive so `Drop` deregisters the shell hook.
-    _hook: ShellHook,
+    /// Only the first bar owns the global shell hook; Drop deregisters it.
+    _hook: Option<ShellHook>,
     windows: Vec<WindowInfo>,
     icons: Vec<Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>>,
     active: Option<HWND>,
+}
+
+extern "system" fn each_monitor(monitor: HMONITOR, _hdc: HDC, _rect: *mut RECT, data: LPARAM) -> BOOL {
+    unsafe {
+        let monitors = &mut *(data.0 as *mut Vec<HMONITOR>);
+        monitors.push(monitor);
+    }
+    BOOL(1)
 }
 
 fn loword(v: isize) -> i16 {
@@ -236,11 +245,22 @@ fn key_of(vk: VIRTUAL_KEY) -> Key {
     }
 }
 
-fn with_app(f: impl FnOnce(&mut App) -> Result<()>) -> LRESULT {
+fn with_app_at(hwnd: HWND, f: impl FnOnce(&mut App) -> Result<()>) -> LRESULT {
     APP.with(|cell| {
-        if let Ok(mut guard) = cell.try_borrow_mut()
-            && let Some(app) = guard.as_mut()
+        if let Ok(mut apps) = cell.try_borrow_mut()
+            && let Some(app) = apps.iter_mut().find(|app| app.hwnd == hwnd)
             && let Err(e) = f(app)
+        {
+            eprintln!("fluent-win taskbar: {e}");
+        }
+    });
+    LRESULT(0)
+}
+
+fn with_apps(f: impl FnOnce(&mut [App]) -> Result<()>) -> LRESULT {
+    APP.with(|cell| {
+        if let Ok(mut apps) = cell.try_borrow_mut()
+            && let Err(e) = f(&mut apps)
         {
             eprintln!("fluent-win taskbar: {e}");
         }
@@ -367,8 +387,7 @@ impl App {
         let k = self.surface.scale();
         let height = (app_bar::HEIGHT * k).round() as i32;
         let work = unsafe {
-            let monitor = MonitorFromPoint(windows::Win32::Foundation::POINT { x: 0, y: 0 },
-                MONITOR_DEFAULTTOPRIMARY);
+            let monitor = MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST);
             let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
             _ = GetMonitorInfoW(monitor, &mut info);
             info.rcWork
@@ -407,7 +426,7 @@ impl App {
     }
 
     /// Handles the dynamic SHELLHOOK notification.
-    fn shell_event(&mut self, code: usize, hwnd: HWND) -> Result<()> {
+    fn apply_shell_event(&mut self, code: usize, hwnd: HWND, snapshot: Vec<WindowInfo>) -> Result<()> {
         let refresh = matches!(code as u32,
             HSHELL_WINDOWCREATED | HSHELL_WINDOWDESTROYED | HSHELL_REDRAW | HSHELL_FLASH
             | HSHELL_MONITORCHANGED);
@@ -416,7 +435,12 @@ impl App {
         } else if !refresh {
             return Ok(());
         }
-        self.refresh_windows();
+        let surface = &self.surface;
+        let list: Vec<WindowInfo> = snapshot.into_iter()
+            .filter(|info| info.hwnd != self.hwnd && !info.title.is_empty())
+            .collect();
+        self.icons = list.iter().map(|info| window_icon(surface, info.hwnd)).collect();
+        self.windows = list;
         self.render()
     }
 
@@ -486,39 +510,51 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     match msg {
         WM_PAINT => {
             unsafe { _ = ValidateRect(Some(hwnd), None) };
-            with_app(App::render)
+            with_app_at(hwnd, App::render)
         }
-        APPBAR_CALLBACK if wp.0 as u32 == ABN_POSCHANGED => with_app(App::reposition),
-        WM_LBUTTONDOWN => with_app(|a| {
-            let k = a.surface.scale();
-            a.activate_button((lp.0 & 0xffff) as f32 / k)
+        APPBAR_CALLBACK if wp.0 as u32 == ABN_POSCHANGED => with_app_at(hwnd, App::reposition),
+        WM_LBUTTONDOWN => with_app_at(hwnd, |app| {
+            let k = app.surface.scale();
+            app.activate_button((lp.0 & 0xffff) as f32 / k)
         }),
-        // lParam is in client pixels; the flyout places itself in screen pixels.
         WM_RBUTTONDOWN => {
             let px = (lp.0 & 0xffff) as i32;
             let py = ((lp.0 >> 16) & 0xffff) as i32;
             let target = APP.with(|cell| {
-                cell.borrow().as_ref().and_then(|app| {
+                cell.borrow().iter().find(|app| app.hwnd == hwnd).and_then(|app| {
                     let k = app.surface.scale();
                     button_at(app, px as f32 / k)
                 })
             });
             if let Some(target) = target {
-                with_app(|app| app.open_menu(px, py, target));
+                with_app_at(hwnd, |app| app.open_menu(px, py, target));
             }
             LRESULT(0)
         }
-        WM_TIMER if wp.0 == CLOCK_TIMER => with_app(App::render),
+        WM_TIMER if wp.0 == CLOCK_TIMER => with_app_at(hwnd, App::render),
         WM_DESTROY => unsafe {
             close_menu();
             _ = KillTimer(Some(hwnd), CLOCK_TIMER);
             // Dropping `App` unregisters the appbar through `AppBar::drop`.
-            APP.with(|cell| drop(cell.borrow_mut().take()));
-            PostQuitMessage(0);
+            let last = APP.with(|cell| {
+                let mut apps = cell.borrow_mut();
+                apps.retain(|app| app.hwnd != hwnd);
+                apps.is_empty()
+            });
+            if last {
+                PostQuitMessage(0);
+            }
             LRESULT(0)
         },
-        _ if msg == window_list::shellhook_message() => with_app(|a| {
-            a.shell_event(wp.0, HWND(lp.0 as *mut core::ffi::c_void))
+        _ if msg == window_list::shellhook_message() => with_apps(|apps| {
+            let code = wp.0;
+            let activated = HWND(lp.0 as *mut core::ffi::c_void);
+            // EnumWindows is global: do it once, not once per monitor.
+            let snapshot = window_list::enumerate()?;
+            for app in apps.iter_mut() {
+                app.apply_shell_event(code, activated, snapshot.clone())?;
+            }
+            Ok(())
         }),
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
@@ -543,26 +579,41 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(menu_wndproc),
             ..Default::default()
         });
-        let k = GetDpiForSystem() as f32 / 96.0;
-        let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Taskbar"),
-            WS_POPUP | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
-            (800.0 * k) as i32, (app_bar::HEIGHT * k).round() as i32,
-            None, None, Some(instance.into()), None)?;
+        let mut monitors = Vec::new();
+        _ = EnumDisplayMonitors(None, None, Some(each_monitor),
+            LPARAM(&mut monitors as *mut Vec<HMONITOR> as isize));
         let theme = Theme::system();
-        let backdrop = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark).is_ok();
-        let surface = Surface::new(hwnd)?;
-        let formats = Formats::new(&surface)?;
-        let bar = AppBar::new(hwnd, APPBAR_CALLBACK)?;
-        let hook = ShellHook::new(hwnd)?;
         let windows = window_list::enumerate()?;
-        APP.with(|cell| {
-            *cell.borrow_mut() = Some(App {
-                hwnd, surface, theme, formats, bar, backdrop, _hook: hook, windows, icons: Vec::new(), active: None,
-            })
+        for (index, monitor) in monitors.iter().enumerate() {
+            let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            _ = GetMonitorInfoW(*monitor, &mut info);
+            let (mut dx, mut dy) = (96, 96);
+            _ = GetDpiForMonitor(*monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+            let k = dx as f32 / 96.0;
+            let width = info.rcMonitor.right - info.rcMonitor.left;
+            let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Taskbar"),
+                WS_POPUP | WS_VISIBLE, info.rcWork.left, info.rcWork.bottom - (app_bar::HEIGHT * k).round() as i32,
+                width, (app_bar::HEIGHT * k).round() as i32,
+                None, None, Some(instance.into()), None)?;
+            let backdrop = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark).is_ok();
+            let surface = Surface::new(hwnd)?;
+            let formats = Formats::new(&surface)?;
+            let bar = AppBar::new(hwnd, APPBAR_CALLBACK)?;
+            // One global shell hook is enough; every bar refreshes on its messages.
+            let hook = if index == 0 { Some(ShellHook::new(hwnd)?) } else { None };
+            APP.with(|cell| cell.borrow_mut().push(App {
+                hwnd, surface, theme, formats, bar, backdrop, _hook: hook,
+                windows: windows.clone(), icons: Vec::new(), active: None,
+            }));
+        }
+        with_apps(|apps| {
+            for app in apps.iter_mut() {
+                app.refresh_windows();
+                app.reposition()?;
+                _ = SetTimer(Some(app.hwnd), CLOCK_TIMER, Duration::from_secs(1).as_millis() as u32, None);
+            }
+            Ok(())
         });
-        with_app(|a| { a.refresh_windows(); Ok(()) });
-        with_app(App::reposition);
-        _ = SetTimer(Some(hwnd), CLOCK_TIMER, Duration::from_secs(1).as_millis() as u32, None);
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             _ = TranslateMessage(&msg);
