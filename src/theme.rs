@@ -23,6 +23,12 @@ pub const fn argb(v: u32) -> D2D1_COLOR_F {
     }
 }
 
+/// `color` with its alpha multiplied by `opacity`, like a XAML brush `Opacity`
+/// (e.g. `AccentFillColorSecondaryBrush` = accent at 0.9).
+pub const fn with_opacity(color: D2D1_COLOR_F, opacity: f32) -> D2D1_COLOR_F {
+    D2D1_COLOR_F { a: color.a * opacity, ..color }
+}
+
 /// WinUI color tokens for one theme. Names follow the WinUI resource keys.
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
@@ -50,6 +56,28 @@ pub struct Theme {
     pub subtle_hover: D2D1_COLOR_F,
     /// `SubtleFillColorTertiary` (list item / subtle button pressed).
     pub subtle_pressed: D2D1_COLOR_F,
+    /// `TextFillColorDisabled`.
+    pub text_disabled: D2D1_COLOR_F,
+    /// `ControlFillColorDisabled`.
+    pub control_fill_disabled: D2D1_COLOR_F,
+    /// `ControlStrokeColorSecondary` (lit edge of `ControlElevationBorderBrush`).
+    pub stroke_secondary: D2D1_COLOR_F,
+    /// `ControlStrokeColorOnAccentDefault`.
+    pub stroke_on_accent: D2D1_COLOR_F,
+    /// `ControlStrokeColorOnAccentSecondary` (edge of `AccentControlElevationBorderBrush`).
+    pub stroke_on_accent_secondary: D2D1_COLOR_F,
+    /// `AccentFillColorDisabled`.
+    pub accent_disabled: D2D1_COLOR_F,
+    /// `TextOnAccentFillColorPrimary`.
+    pub text_on_accent: D2D1_COLOR_F,
+    /// `TextOnAccentFillColorSecondary` (accent button pressed).
+    pub text_on_accent_secondary: D2D1_COLOR_F,
+    /// `TextOnAccentFillColorDisabled`.
+    pub text_on_accent_disabled: D2D1_COLOR_F,
+    /// `FocusStrokeColorOuter` (2-DIP outer focus ring).
+    pub focus_outer: D2D1_COLOR_F,
+    /// `FocusStrokeColorInner` (1-DIP inner focus ring).
+    pub focus_inner: D2D1_COLOR_F,
 }
 
 impl Theme {
@@ -67,6 +95,17 @@ impl Theme {
         stroke: argb(0x12FFFFFF),
         subtle_hover: argb(0x0FFFFFFF),
         subtle_pressed: argb(0x0AFFFFFF),
+        text_disabled: argb(0x5DFFFFFF),
+        control_fill_disabled: argb(0x0BFFFFFF),
+        stroke_secondary: argb(0x18FFFFFF),
+        stroke_on_accent: argb(0x14FFFFFF),
+        stroke_on_accent_secondary: argb(0x23000000),
+        accent_disabled: argb(0x28FFFFFF),
+        text_on_accent: argb(0xFF000000),
+        text_on_accent_secondary: argb(0x80000000),
+        text_on_accent_disabled: argb(0x87FFFFFF),
+        focus_outer: argb(0xFFFFFFFF),
+        focus_inner: argb(0xB3000000),
     };
 
     /// WinUI light theme, default blue accent.
@@ -83,6 +122,17 @@ impl Theme {
         stroke: argb(0x0F000000),
         subtle_hover: argb(0x09000000),
         subtle_pressed: argb(0x06000000),
+        text_disabled: argb(0x5C000000),
+        control_fill_disabled: argb(0x4DF9F9F9),
+        stroke_secondary: argb(0x29000000),
+        stroke_on_accent: argb(0x14FFFFFF),
+        stroke_on_accent_secondary: argb(0x66000000),
+        accent_disabled: argb(0x37000000),
+        text_on_accent: argb(0xFFFFFFFF),
+        text_on_accent_secondary: argb(0xB3FFFFFF),
+        text_on_accent_disabled: argb(0xFFFFFFFF),
+        focus_outer: argb(0xE4000000),
+        focus_inner: argb(0xB3FFFFFF),
     };
 
     /// Current app theme and accent from `UISettings`, the documented source
