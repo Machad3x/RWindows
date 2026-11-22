@@ -24,12 +24,12 @@ surface.end()?;
 
 ## Arquitetura
 
-| Módulo | Função |
-|---|---|
-| `backdrop` | Mica/Acrylic, cantos arredondados e barra de título escura via DWM (`DwmSetWindowAttribute`) |
-| `gfx` | Direct2D + DirectWrite sobre um swap chain de DirectComposition com alfa pré-multiplicado. Pixels transparentes mostram o backdrop do DWM. |
-| `theme` | Tokens de cor do WinUI, type ramp, raios de canto e acento do sistema |
-| `easing` | Curvas e durações de animação do Win11, mais um `Tween` |
+| Módulo     | Função                                                                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `backdrop` | Mica/Acrylic, cantos arredondados e barra de título escura via DWM (`DwmSetWindowAttribute`)                                               |
+| `gfx`      | Direct2D + DirectWrite sobre um swap chain de DirectComposition com alfa pré-multiplicado. Pixels transparentes mostram o backdrop do DWM. |
+| `theme`    | Tokens de cor do WinUI, type ramp, raios de canto e acento do sistema                                                                      |
+| `easing`   | Curvas e durações de animação do Win11, mais um `Tween`                                                                                    |
 
 Única dependência: o crate `windows`. Não usa framework, webview nem GPUI.
 
