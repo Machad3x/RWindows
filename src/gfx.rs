@@ -138,12 +138,14 @@ impl Surface {
         if px == self.px {
             return Ok(());
         }
-        self.px = px;
         unsafe {
             self.ctx.SetTarget(None);
             self.swap.ResizeBuffers(0, px.0, px.1, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))?;
         }
-        self.bind()
+        self.bind()?;
+        // Only after success: a failed resize must be retried by the next WM_SIZE.
+        self.px = px;
+        Ok(())
     }
 
     /// Call on `WM_DPICHANGED` with the new DPI (low word of `wParam`).
