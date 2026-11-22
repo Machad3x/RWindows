@@ -55,7 +55,7 @@ pub struct Surface {
     brush: ID2D1SolidColorBrush,
     swap: IDXGISwapChain1,
     _dcomp: IDCompositionDevice,
-    _target: IDCompositionTarget,
+    _target: Option<IDCompositionTarget>,
     _visual: IDCompositionVisual,
     hwnd: HWND,
     dpi: f32,
@@ -103,7 +103,7 @@ impl Surface {
                 ctx,
                 swap,
                 _dcomp: dcomp,
-                _target: target,
+                _target: Some(target),
                 _visual: visual,
                 hwnd,
                 dpi: GetDpiForWindow(hwnd) as f32,
@@ -197,9 +197,11 @@ impl Surface {
         };
         match presented {
             Err(e) if is_device_lost(&e) => {
-                *self = Self::new(self.hwnd)?;
+                let recreated = self.recreate();
+                // Repaint either way: on success to draw the dropped frame, on
+                // failure so the next WM_PAINT retries the recreation.
                 unsafe { _ = InvalidateRect(Some(self.hwnd), None, false) };
-                Ok(())
+                recreated
             }
             other => other,
         }
@@ -211,6 +213,16 @@ impl Surface {
         let k = self.scale();
         let s = |v: f32| (v * k).round() / k;
         rect(s(r.left), s(r.top), s(r.right), s(r.bottom))
+    }
+
+    /// Rebuilds every device resource on the same window.
+    fn recreate(&mut self) -> Result<()> {
+        // DirectComposition allows one target per HWND: release the old one first.
+        self._target = None;
+        // Best effort: on a lost device Commit may fail, the release still happens.
+        unsafe { _ = self._dcomp.Commit() };
+        *self = Self::new(self.hwnd)?;
+        Ok(())
     }
 
     /// Fills a rounded rectangle (edges snapped to device pixels).
@@ -308,6 +320,21 @@ mod tests {
             layout.GetLineMetrics(Some(&mut m), &mut n).unwrap();
             (m[0].height, m[0].baseline)
         }
+    }
+
+    /// Invisible top-level window, enough to host a composition target.
+    fn hidden_window() -> HWND {
+        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP};
+        unsafe {
+            CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, w!("STATIC"), w!(""), WS_POPUP,
+                0, 0, 64, 64, None, None, None, None).unwrap()
+        }
+    }
+
+    #[test]
+    fn recreate_should_rebind_the_same_window() {
+        let mut surface = Surface::new(hidden_window()).unwrap();
+        assert_eq!(surface.recreate(), Ok(()));
     }
 
     #[test]
