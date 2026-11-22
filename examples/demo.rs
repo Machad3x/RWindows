@@ -56,8 +56,8 @@ fn tile_rect(i: usize) -> D2D_RECT_F {
 }
 
 impl App {
-    fn render(&self) -> Result<()> {
-        let (s, t) = (&self.surface, &self.theme);
+    fn render(&mut self) -> Result<()> {
+        let (s, t) = (&mut self.surface, &self.theme);
         s.begin();
         s.text("Fixado", &self.header, rect(PAD, 24.0, PAD + 300.0, 48.0), t.text_primary);
         for (i, name) in TILES.iter().enumerate() {
@@ -206,7 +206,7 @@ fn main() -> Result<()> {
         let header = surface.format(&theme::BODY_STRONG)?;
         let label = surface.format(&theme::CAPTION)?;
         label.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-        let app = App {
+        let mut app = App {
             hwnd, surface, theme, header, label,
             hover: [Tween::idle(0.0); TILES.len()],
             hot: None,

@@ -4,7 +4,7 @@
 //! pixels reveal the DWM backdrop (Mica/Acrylic). Text is grayscale-AA, like
 //! WinUI; ClearType cannot blend onto a transparent surface.
 
-use windows::Win32::Foundation::{E_POINTER, HMODULE, HWND, RECT};
+use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, E_POINTER, HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
@@ -34,10 +34,12 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_PRESENT, DXGI_SWAP_CHAIN_DESC1,
+    CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+    DXGI_PRESENT, DXGI_SWAP_CHAIN_DESC1,
     DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
     IDXGIDevice, IDXGIFactory2, IDXGISurface, IDXGISwapChain1,
 };
+use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{Error, Interface, Result, w};
@@ -55,6 +57,7 @@ pub struct Surface {
     _dcomp: IDCompositionDevice,
     _target: IDCompositionTarget,
     _visual: IDCompositionVisual,
+    hwnd: HWND,
     dpi: f32,
     px: (u32, u32),
 }
@@ -102,6 +105,7 @@ impl Surface {
                 _dcomp: dcomp,
                 _target: target,
                 _visual: visual,
+                hwnd,
                 dpi: GetDpiForWindow(hwnd) as f32,
                 px,
             };
@@ -183,11 +187,21 @@ impl Surface {
     }
 
     /// Ends the frame and presents it, waiting for vsync.
-    // shortcut: device loss (DXGI_ERROR_DEVICE_REMOVED) is returned, not recovered; recreate the Surface on error if GPU resets matter.
-    pub fn end(&self) -> Result<()> {
-        unsafe {
-            self.ctx.EndDraw(None, None)?;
-            self.swap.Present(1, DXGI_PRESENT(0)).ok()
+    ///
+    /// If the GPU device was lost (driver update, adapter reset, RDP), every
+    /// device resource is recreated and a repaint is requested; the lost frame
+    /// is dropped. Text formats stay valid: DirectWrite is device-independent.
+    pub fn end(&mut self) -> Result<()> {
+        let presented = unsafe {
+            self.ctx.EndDraw(None, None).and_then(|()| self.swap.Present(1, DXGI_PRESENT(0)).ok())
+        };
+        match presented {
+            Err(e) if is_device_lost(&e) => {
+                *self = Self::new(self.hwnd)?;
+                unsafe { _ = InvalidateRect(Some(self.hwnd), None, false) };
+                Ok(())
+            }
+            other => other,
         }
     }
 
@@ -243,6 +257,12 @@ fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
     D2D1_ROUNDED_RECT { rect, radiusX: radius, radiusY: radius }
 }
 
+/// True for errors that mean the GPU device is gone and every device resource
+/// must be recreated (driver update/crash, adapter removed, RDP switch).
+fn is_device_lost(e: &Error) -> bool {
+    [DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, D2DERR_RECREATE_TARGET].contains(&e.code())
+}
+
 fn text_format(dwrite: &IDWriteFactory6, ramp: &Ramp) -> Result<IDWriteTextFormat> {
     let axes = [DWRITE_FONT_AXIS_VALUE { axisTag: DWRITE_FONT_AXIS_TAG_WEIGHT, value: ramp.weight }];
     unsafe {
@@ -288,6 +308,17 @@ mod tests {
             layout.GetLineMetrics(Some(&mut m), &mut n).unwrap();
             (m[0].height, m[0].baseline)
         }
+    }
+
+    #[test]
+    fn device_lost_should_be_detected_for_removed_reset_and_recreate_target() {
+        let lost = [DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, D2DERR_RECREATE_TARGET];
+        assert!(lost.into_iter().all(|hr| is_device_lost(&Error::from(hr))));
+    }
+
+    #[test]
+    fn other_errors_should_not_count_as_device_lost() {
+        assert!(!is_device_lost(&Error::from(windows::Win32::Foundation::E_INVALIDARG)));
     }
 
     #[test]
