@@ -226,7 +226,7 @@ Verificado com um listener C# sobre `System.Windows.Automation`: chegam os event
 
 Observado e sem documentação: o cliente .NET chama `SetFocus` no botão antes do `Invoke`, então o foco vai para o botão invocado. O provider obedece o pedido. Não está confirmado se quem pede é o cliente gerenciado ou o UIA core.
 
-Eventos de propriedade: `ToggleState` (antigo → novo) e `BoundingRectangle` depois de `WM_DPICHANGED` (o retângulo em pixels de tela muda; `uia::bounds_variant` monta o `VT_ARRAY | VT_R8` com left, top, width, height; valor antigo `VT_EMPTY`, porque o retângulo anterior não é guardado). Mover a janela (ou redimensioná-la pela borda esquerda/superior) muda o `BoundingRectangle` de todos os controles em pixels de tela, mas não dispara evento: limitação deliberada, para não gerar uma rajada a cada `WM_MOVE` durante o arraste. Os clientes acompanham a janela pelos eventos de localização do próprio HWND e releem os retângulos quando precisam (inferência; não verificado com Narrador/NVDA). `IsEnabled` não tem evento porque o exemplo não muda isso em tempo de execução; quem mudar deve disparar `UIA_IsEnabledPropertyId`. Não verificado: o evento de `BoundingRectangle` (não dá para simular `WM_DPICHANGED` de fora do processo) e teste com Narrador e NVDA.
+Eventos de propriedade: `ToggleState` (antigo → novo) e `BoundingRectangle` depois de `WM_DPICHANGED` (o retângulo em pixels de tela muda; `uia::bounds_variant` monta o `VT_ARRAY | VT_R8` com left, top, width, height; valor antigo `VT_EMPTY`, porque o retângulo anterior não é guardado). Mover a janela (ou redimensioná-la pela borda esquerda/superior) muda o `BoundingRectangle` de todos os controles em pixels de tela, mas não dispara evento: limitação deliberada, para não gerar uma rajada a cada `WM_MOVE` durante o arraste. Os clientes acompanham a janela pelos eventos de localização do próprio HWND e releem os retângulos quando precisam (inferência; não verificado com Narrador/NVDA). `IsEnabled` não tem evento porque o exemplo não muda isso em tempo de execução; quem mudar deve disparar `UIA_IsEnabledPropertyId`. Verificado com troca real de escala (125% → 150% com o exemplo aberto): chegaram 9 eventos de `BoundingRectangle`, um por controle, com o retângulo novo (Salvar 91×48 px = 32 DIPs × 1,5). Não verificado: teste com Narrador e NVDA.
 
 ## Tipografia
 
@@ -266,7 +266,9 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 - [x] Button: UI Automation (fragmentos, Invoke, foco), verificado com cliente UIA real
 - [x] Button: alto contraste (tabela `HighContrast` do WinUI; os dois exemplos pintam fundo Window e recarregam o tema ao vivo)
 - [x] Alto contraste ligado de verdade com o `buttons` aberto (troca ao vivo)
-- [ ] Button: eventos UIA de IsEnabled/BoundingRectangle; teste com Narrador/NVDA
+- [x] Escalas fracionárias: 125% e 150% conferidas com zoom nas bordas (sem emenda nem borrão), e troca ao vivo 125% → 150% redimensiona a janela para 780×450 (520×300 DIPs) e escala o conteúdo
+- [x] Eventos UIA de BoundingRectangle (troca de DPI) e ToggleState; IsEnabled não muda em tempo de execução no exemplo
+- [ ] Teste com Narrador/NVDA
 - [x] Texto sem alocação no heap por frame: rótulos de até 128 unidades UTF-16 são codificados na pilha (`with_wide`); só textos maiores alocam
 - Fora do escopo: Mica no Win10/Win11 21H2 (a meta é o Win11 atual)
 
