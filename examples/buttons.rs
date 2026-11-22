@@ -24,7 +24,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     IRawElementProviderSimple, ToggleState_Off, ToggleState_On, UIA_AutomationFocusChangedEventId, UIA_EVENT_ID,
-    UIA_Invoke_InvokedEventId, UIA_ToggleToggleStatePropertyId, UiaRaiseAutomationPropertyChangedEvent,
+    UIA_ButtonControlTypeId, UIA_Invoke_InvokedEventId, UIA_ToggleToggleStatePropertyId, UiaRaiseAutomationPropertyChangedEvent,
     UiaClientsAreListening, UiaRaiseAutomationEvent, UiaReturnRawElementProvider, UiaRootObjectId,
 };
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -184,6 +184,7 @@ impl App {
             rect: b.rect(),
             enabled: b.enabled(),
             toggle: b.checked(),
+            control_type: UIA_ButtonControlTypeId,
         }).collect();
     }
 

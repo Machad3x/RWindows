@@ -46,6 +46,9 @@ pub struct Item {
     pub enabled: bool,
     /// `ToggleState` of a toggle button (Toggle pattern instead of Invoke); `None` for a plain button.
     pub toggle: Option<bool>,
+    /// `ControlType`: `UIA_ButtonControlTypeId` (Button, ToggleButton, ToggleSwitch) or
+    /// `UIA_CheckBoxControlTypeId` (`CheckBoxAutomationPeer`).
+    pub control_type: UIA_CONTROLTYPE_ID,
 }
 
 /// What the providers expose; the app keeps it current.
@@ -205,7 +208,7 @@ impl IRawElementProviderSimple_Impl for ItemProvider_Impl {
         let item = self.info()?;
         let focused = self.model.borrow().focused == Some(self.index);
         Ok(match id {
-            UIA_ControlTypePropertyId => VARIANT::from(UIA_ButtonControlTypeId.0),
+            UIA_ControlTypePropertyId => VARIANT::from(item.control_type.0),
             UIA_NamePropertyId => VARIANT::from(item.name.as_str()),
             // Unique among peers (Button control type requirement).
             UIA_AutomationIdPropertyId => VARIANT::from(format!("button-{}", self.index).as_str()),
@@ -331,9 +334,9 @@ mod tests {
             hwnd,
             scale,
             items: vec![
-                Item { name: "Configurações".into(), rect: rect(10.0, 10.0, 110.0, 42.0), enabled: true, toggle: None },
-                Item { name: "Salvar".into(), rect: rect(120.0, 10.0, 180.0, 42.0), enabled: true, toggle: None },
-                Item { name: "Desabilitado".into(), rect: rect(190.0, 10.0, 290.0, 42.0), enabled: false, toggle: None },
+                Item { name: "Configurações".into(), rect: rect(10.0, 10.0, 110.0, 42.0), enabled: true, toggle: None, control_type: UIA_ButtonControlTypeId },
+                Item { name: "Salvar".into(), rect: rect(120.0, 10.0, 180.0, 42.0), enabled: true, toggle: None, control_type: UIA_ButtonControlTypeId },
+                Item { name: "Desabilitado".into(), rect: rect(190.0, 10.0, 290.0, 42.0), enabled: false, toggle: None, control_type: UIA_ButtonControlTypeId },
             ],
             focused: Some(1),
         }))
@@ -405,6 +408,14 @@ mod tests {
         let control_type = i32::try_from(&prop(&m, 1, UIA_ControlTypePropertyId)).unwrap();
         let name = bstr(&prop(&m, 1, UIA_NamePropertyId));
         assert_eq!((control_type, name.as_str()), (UIA_ButtonControlTypeId.0, "Salvar"));
+    }
+
+    #[test]
+    fn control_type_should_come_from_the_model() {
+        let m = model(1.0);
+        m.borrow_mut().items[0].control_type = UIA_CheckBoxControlTypeId;
+        let control_type = i32::try_from(&prop(&m, 0, UIA_ControlTypePropertyId)).unwrap();
+        assert_eq!(control_type, UIA_CheckBoxControlTypeId.0);
     }
 
     #[test]
@@ -514,7 +525,7 @@ mod tests {
 
     /// Appends toggle button 3 (`checked`, `enabled`).
     fn with_toggle(m: &Shared, checked: bool, enabled: bool) -> usize {
-        let item = Item { name: "Wi-Fi".into(), rect: rect(300.0, 10.0, 360.0, 42.0), enabled, toggle: Some(checked) };
+        let item = Item { name: "Wi-Fi".into(), rect: rect(300.0, 10.0, 360.0, 42.0), enabled, toggle: Some(checked), control_type: UIA_ButtonControlTypeId };
         m.borrow_mut().items.push(item);
         3
     }
