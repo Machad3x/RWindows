@@ -191,6 +191,19 @@ Exemplo: "Modo avião" (Ativado/Desativado) numa terceira linha do `buttons`, qu
 
 Simplificações: durante o drag as cores ficam as do estado atual (no WinUI o estado `Dragging` também mantém o visual do lado de partida); sem `HeaderPlacement=Left`; o raio do anel de foco usa o mesmo ajuste do Button (+3).
 
+## Panel (roteamento comum)
+
+`panel::Panel` guarda os controles em ordem de Tab e faz o roteamento que toda janela precisa; antes isso vivia copiado no exemplo.
+
+| Regra | Fonte |
+|---|---|
+| Movimento/soltura/saída do ponteiro vão só para o controle com a captura, como o XAML roteia eventos de ponteiro capturado; teclas vão para o controle com foco | `ButtonBase` + roteamento de ponteiro do XAML |
+| Press que pede foco tira o foco do anterior (que solta a captura se a tinha: Tab com o mouse apertado) | `OnLostFocus` |
+| Tab/Shift+Tab pulam controles desabilitados | `IsTabStop` em controle desabilitado |
+| `Outcome { redraw, capture, events }`: a janela chama `SetCapture`/`ReleaseCapture` (vale o último pedido), dispara os eventos UIA e repinta | — |
+| Eventos: `Invoked(i)` para botão comum, `Toggled { index, old, new }` para quem tem o padrão Toggle (estado antes e depois do clique), `Focused(i)` quando o foco muda | Peers do WinUI: só Invoke ou só Toggle |
+| `trait Control` (Button, ToggleSwitch, CheckBox) e `Formats` (os quatro formatos de texto); `uia_items()` monta o modelo do `uia` | — |
+
 ## UI Automation
 
 `uia` expõe controles desenhados à mão para leitores de tela (Narrador, NVDA) e ferramentas de teste. A janela devolve uma raiz de fragmento no `WM_GETOBJECT` (`UiaRootObjectId`), e cada controle é um fragmento filho do tipo Button com o padrão Invoke.
