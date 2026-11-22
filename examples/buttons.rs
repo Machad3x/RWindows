@@ -25,7 +25,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
     LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
-    SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_DESTROY, WM_DPICHANGED,
+    SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_CAPTURECHANGED, WM_DESTROY,
+    WM_DPICHANGED,
     WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
     WM_QUIT, WM_SETTINGCHANGE, WM_SIZE, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
     WS_VISIBLE,
@@ -66,10 +67,17 @@ impl App {
         self.buttons.iter().any(Button::animating)
     }
 
-    /// Sends `input` to every button and applies capture, focus and click effects.
+    /// Sends `input` to the buttons and applies capture, focus and click effects.
+    /// While one button holds the capture, pointer input goes to it alone (as XAML
+    /// routes captured pointer events), so dragging across others does not light them.
     fn dispatch(&mut self, input: Input) -> Result<()> {
+        let pointer = matches!(input, Input::PointerMove(..) | Input::PointerUp(..) | Input::PointerLeave);
+        let captor = self.buttons.iter().position(Button::is_captured).filter(|_| pointer);
         let mut redraw = false;
         for i in 0..self.buttons.len() {
+            if captor.is_some_and(|c| c != i) {
+                continue;
+            }
             let r = self.buttons[i].handle(input);
             redraw |= self.apply(i, r)?;
         }
@@ -79,15 +87,24 @@ impl App {
         Ok(())
     }
 
-    fn apply(&mut self, i: usize, r: Response) -> Result<bool> {
-        match r.capture {
+    fn capture(&self, request: Option<bool>) -> Result<()> {
+        match request {
             Some(true) => unsafe { _ = SetCapture(self.hwnd) },
+            // Our own WM_CAPTURECHANGED re-enters with_app and is skipped by the borrow check.
             Some(false) => unsafe { ReleaseCapture()? },
             None => {}
         }
+        Ok(())
+    }
+
+    fn apply(&mut self, i: usize, r: Response) -> Result<bool> {
+        self.capture(r.capture)?;
         let mut redraw = r.redraw;
         if r.take_focus {
-            redraw |= self.move_focus(Some(i), FocusKind::Pointer);
+            redraw |= self.move_focus(Some(i), FocusKind::Pointer)?;
+        }
+        if r.lost_focus && self.focused == Some(i) {
+            self.focused = None;
         }
         if r.clicked {
             self.status = format!("Clicou: {}", self.buttons[i].label);
@@ -96,17 +113,20 @@ impl App {
         Ok(redraw)
     }
 
-    /// Moves focus to `to`, blurring the previous button. Returns true if anything changed.
-    fn move_focus(&mut self, to: Option<usize>, kind: FocusKind) -> bool {
+    /// Moves focus to `to`, blurring the previous button (which releases a capture
+    /// it held: Tab while the mouse is down). Returns true if anything changed.
+    fn move_focus(&mut self, to: Option<usize>, kind: FocusKind) -> Result<bool> {
         let mut redraw = false;
         if let Some(old) = self.focused.filter(|&old| Some(old) != to) {
-            redraw |= self.buttons[old].handle(Input::Blur).redraw;
+            let blur = self.buttons[old].handle(Input::Blur);
+            self.capture(blur.capture)?;
+            redraw |= blur.redraw;
         }
         if let Some(new) = to {
             redraw |= self.buttons[new].handle(Input::Focus(kind)).redraw;
         }
         self.focused = to;
-        redraw
+        Ok(redraw)
     }
 
     /// Tab order over enabled buttons (disabled ones are skipped, like IsTabStop on a disabled control).
@@ -116,7 +136,7 @@ impl App {
         let next = (1..=n)
             .map(|k| if back { (start + n - k) % n } else { (start + k) % n })
             .find(|&i| self.buttons[i].visual() != fluent_win::button::Visual::Disabled);
-        if self.move_focus(next, FocusKind::Keyboard) {
+        if self.move_focus(next, FocusKind::Keyboard)? {
             self.render()?;
         }
         Ok(())
@@ -208,11 +228,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         WM_KEYUP => with_app(|a| a.key(VIRTUAL_KEY(wp.0 as u16), false)),
         WM_KILLFOCUS => with_app(|a| {
             // Window lost focus: the focused button loses it too (OnLostFocus).
-            if a.move_focus(None, FocusKind::Keyboard) {
+            if a.move_focus(None, FocusKind::Keyboard)? {
                 a.render()?;
             }
             Ok(())
         }),
+        // Another window took the capture: abandon any press (OnPointerCaptureLost).
+        WM_CAPTURECHANGED if lp.0 != hwnd.0 as isize => with_app(|a| a.dispatch(Input::CaptureLost)),
         WM_DPICHANGED => {
             with_app(|a| a.surface.set_dpi(f32::from(loword(wp.0 as isize) as u16)));
             // Outside with_app: SetWindowPos sends WM_SIZE synchronously.
