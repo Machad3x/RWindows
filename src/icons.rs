@@ -12,7 +12,7 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1, D2D1_INTERPOLATION_MODE_LINEAR, ID2D1Bitmap1,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Gdi::{BITMAP, DeleteObject, GetObjectW};
+use windows::Win32::Graphics::Gdi::{BITMAP, HBITMAP, DeleteObject, GetObjectW};
 use windows::Win32::UI::Shell::{IShellItemImageFactory, SIIGBF_ICONONLY, SHCreateItemFromParsingName};
 use windows::core::{HSTRING, Result};
 
@@ -63,6 +63,12 @@ fn load(surface: &Surface, path: &str, size: u32) -> Result<ID2D1Bitmap1> {
         SHCreateItemFromParsingName(&HSTRING::from(path), None)?
     };
     let handle = unsafe { item.GetImage(SIZE { cx: size as i32, cy: size as i32 }, SIIGBF_ICONONLY)? };
+    from_hbitmap(surface, handle)
+}
+
+/// Wraps a 32-bpp DIB section into a D2D bitmap, then deletes the GDI handle.
+/// Used by both file icons and window icons from `WM_GETICON`.
+pub fn from_hbitmap(surface: &Surface, handle: HBITMAP) -> Result<ID2D1Bitmap1> {
     let mut info = BITMAP::default();
     let read = unsafe {
         GetObjectW(handle.into(), size_of::<BITMAP>() as i32, Some(ptr::from_mut(&mut info).cast()))
