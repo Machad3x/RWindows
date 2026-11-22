@@ -9,4 +9,5 @@
 
 pub mod backdrop;
 pub mod easing;
+pub mod gfx;
 pub mod theme;
