@@ -16,6 +16,7 @@ use fluent_win::check_box::{CheckBox, CheckState};
 use fluent_win::flyout;
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::layout::{Orientation, Stack};
+use fluent_win::menu_flyout::{Entry, Item, MenuFlyout};
 use fluent_win::panel::{Control, Event, Formats, Outcome, Panel};
 use fluent_win::slider::{self, Slider};
 use fluent_win::theme::Theme;
@@ -77,12 +78,14 @@ struct App {
 
 /// Label of the button that opens the flyout.
 const MORE: &str = "Mais opções";
+/// Label of the button that opens the menu.
+const MENU: &str = "Menu";
 
-/// A flyout: its own popup window (acrylic backdrop), surface and controls.
+/// A flyout: its own popup window (acrylic backdrop), surface and content.
 struct Popup {
     hwnd: HWND,
     surface: Surface,
-    panel: Panel,
+    content: Content,
     /// Size in DIPs.
     size: (f32, f32),
     /// Final top-left in screen pixels; the transition offsets it.
@@ -91,6 +94,31 @@ struct Popup {
     closing: bool,
     /// True when the DWM acrylic backdrop is active (else the fallback color fills).
     backdrop: bool,
+}
+
+/// What a popup hosts: a content flyout or a menu.
+enum Content {
+    Panel(Panel),
+    Menu(MenuFlyout),
+}
+
+impl Content {
+    fn draw(&self, s: &Surface, t: &Theme, f: &Formats) -> Result<()> {
+        match self {
+            Content::Panel(p) => p.draw(s, t, f),
+            Content::Menu(m) => {
+                m.draw(s, t, f);
+                Ok(())
+            }
+        }
+    }
+
+    fn animating(&self) -> bool {
+        match self {
+            Content::Panel(p) => p.animating(),
+            Content::Menu(_) => false,
+        }
+    }
 }
 
 /// A UIA notification queued until the APP borrow ends.
@@ -161,6 +189,8 @@ impl App {
                     self.raise(i, UiaEvent::Event(UIA_Invoke_InvokedEventId));
                     if self.panel.controls[i].name() == MORE {
                         self.open_flyout(i)?;
+                    } else if self.panel.controls[i].name() == MENU {
+                        self.open_menu(i)?;
                     }
                 }
                 // Toggle controls raise ToggleState changed, not Invoked (their peers have no Invoke).
@@ -190,6 +220,42 @@ impl App {
 
     /// Opens the flyout under control `anchor` (`FlyoutPlacementMode.Bottom`).
     fn open_flyout(&mut self, anchor: usize) -> Result<()> {
+        // Content inside FlyoutContentPadding: a ToggleSwitch and a Slider.
+        let (pl, pt, pr, pb) = flyout::PADDING;
+        let switch = ToggleSwitch::layout(&self.surface, &self.formats.switch, "Luz noturna", "Ativado", "Desativado", pl, pt, false)?;
+        let inner = (switch.rect.right - switch.rect.left).max(248.0);
+        let top = switch.rect.bottom + GAP;
+        let slider = Slider::new("Brilho", rect(pl, top, pl + inner, top + slider::HEIGHT), 0.0, 100.0, 70.0);
+        let size = (
+            (pl + inner + pr).clamp(flyout::WIDTH_RANGE.0, flyout::WIDTH_RANGE.1),
+            (top + slider::HEIGHT + pb).clamp(flyout::HEIGHT_RANGE.0, flyout::HEIGHT_RANGE.1),
+        );
+        let content = Content::Panel(Panel::new(vec![Box::new(switch), Box::new(slider)]));
+        self.open_popup(anchor, content, size, w!("Mais opções"))
+    }
+
+    /// Opens a `MenuFlyout` under control `anchor`, like `Button.Flyout`.
+    fn open_menu(&mut self, anchor: usize) -> Result<()> {
+        let mut copy = Item::new("Copiar");
+        copy.accelerator = Some("Ctrl+C".to_owned());
+        let mut top = Item::new("Mover para o topo");
+        top.enabled = false;
+        let entries = vec![
+            Entry::Item(Item::new("Abrir")),
+            Entry::Item(Item::new("Fixar na barra de tarefas")),
+            Entry::Separator,
+            Entry::Item(copy),
+            Entry::Item(top),
+        ];
+        let sizes = entries.iter().map(|e| e.measure(&self.surface, &self.formats)).collect::<Result<Vec<_>>>()?;
+        let menu = MenuFlyout::new(entries, &sizes);
+        let size = menu.size();
+        self.open_popup(anchor, Content::Menu(menu), size, w!("Menu"))
+    }
+
+    /// Opens `content` in a popup window under control `anchor`
+    /// (`FlyoutPlacementMode.Bottom`).
+    fn open_popup(&mut self, anchor: usize, content: Content, size: (f32, f32), title: PCWSTR) -> Result<()> {
         if self.popup.is_some() {
             return Ok(());
         }
@@ -211,16 +277,7 @@ impl App {
         };
         let dips = |r: RECT| rect(r.left as f32 / k, r.top as f32 / k, r.right as f32 / k, r.bottom as f32 / k);
         let (target, container) = (dips(anchor_px), dips(work));
-        // Content inside FlyoutContentPadding: a ToggleSwitch and a Slider.
-        let (pl, pt, pr, pb) = flyout::PADDING;
-        let switch = ToggleSwitch::layout(&self.surface, &self.formats.switch, "Luz noturna", "Ativado", "Desativado", pl, pt, false)?;
-        let inner = (switch.rect.right - switch.rect.left).max(248.0);
-        let top = switch.rect.bottom + GAP;
-        let slider = Slider::new("Brilho", rect(pl, top, pl + inner, top + slider::HEIGHT), 0.0, 100.0, 70.0);
-        let (w, h) = (
-            (pl + inner + pr).clamp(flyout::WIDTH_RANGE.0, flyout::WIDTH_RANGE.1),
-            (top + slider::HEIGHT + pb).clamp(flyout::HEIGHT_RANGE.0, flyout::HEIGHT_RANGE.1),
-        );
+        let (w, h) = size;
         let (r, placement) = flyout::place(target, w, h, container, flyout::Placement::Bottom);
         let origin = ((r.left * k).round() as i32, (r.top * k).round() as i32);
         let transition = flyout::Transition::open(placement);
@@ -229,16 +286,15 @@ impl App {
         let (x0, y0) = (origin.0 + (start.0 * k).round() as i32, origin.1 + (start.1 * k).round() as i32);
         let hwnd = unsafe {
             CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST, w!("fluent-win-flyout"),
-                w!("Mais opções"), WS_POPUP, x0, y0, (w * k).round() as i32, (h * k).round() as i32,
+                title, WS_POPUP, x0, y0, (w * k).round() as i32, (h * k).round() as i32,
                 Some(self.hwnd), None, None, None)?
         };
         let backdrop = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, self.theme.dark).is_ok();
         let surface = Surface::new(hwnd)?;
         self.popup = Some(Popup {
-            hwnd, surface, panel: Panel::new(vec![Box::new(switch), Box::new(slider)]), size: (w, h), origin,
-            transition, closing: false, backdrop,
+            hwnd, surface, content, size, origin, transition, closing: false, backdrop,
         });
-        // Keyboard focus moves into the flyout; the WM_KILLFOCUS that ShowWindow sends
+        // Keyboard focus moves into the popup; the WM_KILLFOCUS that ShowWindow sends
         // the main window arrives while APP is borrowed and is skipped, so blur here.
         let out = self.panel.focus(None, FocusKind::Keyboard);
         if out.redraw {
@@ -263,11 +319,11 @@ impl App {
         let (x, y) = (p.origin.0 + (f.offset.0 * k).round() as i32, p.origin.1 + (f.offset.1 * k).round() as i32);
         unsafe { SetWindowPos(p.hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)? };
         let style = flyout::style(&self.theme, p.backdrop);
-        let Popup { surface, panel, size, .. } = p;
+        let Popup { surface, content, size, .. } = p;
         surface.begin();
         surface.with_opacity(f.opacity, |s| {
             flyout::draw_chrome(s, &style, *size);
-            panel.draw(s, &self.theme, &self.formats)
+            content.draw(s, &self.theme, &self.formats)
         })?;
         surface.end()
     }
@@ -285,35 +341,47 @@ impl App {
     }
 
     fn popup_animating(&self) -> bool {
-        self.popup.as_ref().is_some_and(|p| p.closing || p.transition.now().running || p.panel.animating())
+        self.popup.as_ref().is_some_and(|p| p.closing || p.transition.now().running || p.content.animating())
     }
 
-    /// Routes input to the flyout's controls and shows their changes in the status line.
+    /// Routes input to the popup's content and shows changes in the status line.
     fn popup_input(&mut self, input: Input) -> Result<()> {
         let Some(p) = self.popup.as_mut() else { return Ok(()) };
-        let out = p.panel.handle(input);
-        match out.capture {
+        let (capture, redraw, status, close) = match &mut p.content {
+            Content::Panel(panel) => {
+                let out = panel.handle(input);
+                let status = out.events.iter().filter_map(|event| match *event {
+                    Event::Toggled { index, new, .. } => {
+                        let state = if new == ToggleState_On { "ligado" } else { "desligado" };
+                        Some(format!("{}: {state}", panel.controls[index].name()))
+                    }
+                    Event::ValueChanged { index, new, .. } => Some(format!("{}: {new}", panel.controls[index].name())),
+                    _ => None,
+                }).next_back();
+                (out.capture, out.redraw, status, false)
+            }
+            Content::Menu(menu) => {
+                let out = menu.handle(input);
+                let close = out.invoked.is_some();
+                let status = out.invoked.map(|i| format!("Clicou: {}", menu.text(i).unwrap_or_default()));
+                (out.capture, out.redraw, status, close)
+            }
+        };
+        match capture {
             Some(true) => unsafe { _ = SetCapture(p.hwnd) },
             Some(false) => unsafe { ReleaseCapture()? },
             None => {}
         }
-        let mut status = None;
-        for event in &out.events {
-            match *event {
-                Event::Toggled { index, new, .. } => {
-                    let state = if new == ToggleState_On { "ligado" } else { "desligado" };
-                    status = Some(format!("{}: {state}", p.panel.controls[index].name()));
-                }
-                Event::ValueChanged { index, new, .. } => status = Some(format!("{}: {new}", p.panel.controls[index].name())),
-                _ => {}
-            }
-        }
-        if out.redraw {
+        if redraw {
             self.frame_popup()?;
         }
         if let Some(status) = status {
             self.status = status;
             self.render()?;
+        }
+        if close {
+            // An invoked menu item closes the menu, as MenuFlyout does.
+            self.close_popup();
         }
         Ok(())
     }
@@ -324,9 +392,12 @@ impl App {
             return Ok(());
         }
         let Some(p) = self.popup.as_mut() else { return Ok(()) };
-        if down && vk == VK_TAB {
+        if let Content::Panel(panel) = &mut p.content
+            && down
+            && vk == VK_TAB
+        {
             let back = unsafe { GetKeyState(i32::from(VK_SHIFT.0)) } < 0;
-            if p.panel.tab(back).redraw {
+            if panel.tab(back).redraw {
                 self.frame_popup()?;
             }
             return Ok(());
@@ -635,7 +706,7 @@ fn controls(surface: &Surface, f: &Formats) -> Result<Vec<Box<dyn Control>>> {
     // Row height is the tallest child, like XAML; equal here since all use `f.label`.
     let second = Stack::new(Orientation::Horizontal).with_spacing(GAP);
     let top = PAD + first.desired_size(&sizes).1 + GAP * 2.0;
-    let row = ["Wi-Fi", "Iniciar", MORE];
+    let row = ["Wi-Fi", "Iniciar", MORE, MENU];
     let sizes = row.iter()
         .map(|&text| Button::desired_size(surface, &f.label, text))
         .collect::<Result<Vec<_>>>()?;
@@ -644,6 +715,8 @@ fn controls(surface: &Surface, f: &Formats) -> Result<Vec<Box<dyn Control>>> {
     controls.push(Box::new(Button::subtle(row[1], rects[1])));
     // Opens a Flyout below itself.
     controls.push(Box::new(Button::new(row[2], rects[2], false)));
+    // Opens a MenuFlyout below itself.
+    controls.push(Box::new(Button::new(row[3], rects[3], false)));
     // Third row: a ToggleSwitch with header (Settings style) and two CheckBoxes
     // centered on the switch row, the second one three-state.
     let top = top + second.desired_size(&sizes).1 + GAP;

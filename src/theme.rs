@@ -63,6 +63,8 @@ pub struct Theme {
     pub card: D2D1_COLOR_F,
     /// `ControlStrokeColorDefault`.
     pub stroke: D2D1_COLOR_F,
+    /// `DividerStrokeColorDefault` (menu separators).
+    pub divider: D2D1_COLOR_F,
     /// `SubtleFillColorSecondary` (list item / subtle button hover).
     pub subtle_hover: D2D1_COLOR_F,
     /// `SubtleFillColorTertiary` (list item / subtle button pressed).
@@ -147,6 +149,7 @@ impl Theme {
         control_fill_pressed: argb(0x08FFFFFF),
         card: argb(0x0DFFFFFF),
         stroke: argb(0x12FFFFFF),
+        divider: argb(0x15FFFFFF),
         subtle_hover: argb(0x0FFFFFFF),
         subtle_pressed: argb(0x0AFFFFFF),
         text_disabled: argb(0x5DFFFFFF),
@@ -184,6 +187,7 @@ impl Theme {
         control_fill_pressed: argb(0x4DF9F9F9),
         card: argb(0xB3FFFFFF),
         stroke: argb(0x0F000000),
+        divider: argb(0x0F000000),
         subtle_hover: argb(0x09000000),
         subtle_pressed: argb(0x06000000),
         text_disabled: argb(0x5C000000),
@@ -222,6 +226,7 @@ impl Theme {
             control_fill_pressed: c.button_face,
             card: c.window,
             stroke: c.button_text,
+            divider: c.window_text,
             subtle_hover: c.button_face,
             subtle_pressed: c.button_face,
             text_disabled: c.gray_text,

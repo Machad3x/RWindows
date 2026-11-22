@@ -30,6 +30,8 @@ pub struct Formats {
     pub body: IDWriteTextFormat,
     /// Segoe Fluent Icons at the CheckBox glyph size.
     pub icon: IDWriteTextFormat,
+    /// Caption for menu accelerators.
+    pub caption: IDWriteTextFormat,
 }
 
 impl Formats {
@@ -40,6 +42,7 @@ impl Formats {
             switch: ToggleSwitch::text_format(surface)?,
             body: surface.format(&theme::BODY)?,
             icon: surface.icon_format(check_box::GLYPH_SIZE)?,
+            caption: surface.format(&theme::CAPTION)?,
         })
     }
 }

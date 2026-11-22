@@ -33,7 +33,7 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⬜ não começado · ❓ inc
 O shell precisa disto antes de existir. Ordem sugerida (cada item: TDD, README, commit, revisão):
 
 - [x] **Layout automático** (`layout::Stack`: empilhamento horizontal/vertical, `Spacing` e medida dos filhos). As fileiras de botões do exemplo já não são posicionadas à mão.
-- [ ] **MenuFlyout** (menu de contexto), em cima do `flyout` e do `Panel`.
+- [x] **MenuFlyout** (`menu_flyout::MenuFlyout`): itens, separadores, atalho, habilitado/desabilitado, setas/Home/End/Espaço/Enter e clique com captura, no popup do `flyout`. Falta submenu, ícone, mnemonic, clique direito e UIA próprio.
 - [ ] **ToolTip**.
 - [ ] **ListView / GridView** (lista de apps do Iniciar, itens fixados), com virtualização.
 - [ ] **ScrollViewer** (rolagem por roda e barra).

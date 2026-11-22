@@ -38,6 +38,7 @@ surface.end()?;
 | `toggle_switch` | ToggleSwitch com arraste |
 | `slider` | Slider horizontal |
 | `flyout` | Posicionamento, animação de abrir/fechar e aparência do Flyout |
+| `menu_flyout` | `MenuFlyoutPresenter` com itens, separadores, atalhos e navegação por teclado |
 | `panel` | Roteamento comum: foco, captura, Tab, eventos (`trait Control`) |
 | `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, e eventos de propriedade |
 
@@ -261,6 +262,26 @@ Exemplo: o botão "Mais opções" abre um flyout (`Placement::Bottom`) com um To
 
 Decisão: o `AcrylicInAppFillColorDefault` do XAML desfoca o conteúdo do próprio app; numa janela popup separada, o equivalente nativo é o backdrop de sistema para janelas transitórias, o mesmo dos flyouts do shell. Por isso não pintamos o tint por cima. Limite: a opacidade da animação vale para o conteúdo desenhado; o backdrop do DWM aparece de uma vez.
 
+## MenuFlyout
+
+`menu_flyout::MenuFlyout` mede e desenha a lista do `MenuFlyoutPresenter` dentro do mesmo popup do `flyout`: a janela, a transição e o light dismiss continuam no app. Cada `Entry` é um `Item` (texto, `KeyboardAcceleratorTextOverride`, `IsEnabled`) ou um `Separator`. O chamador mede com `Entry::measure`, entrega um `Measure` por entrada a `MenuFlyout::new` e usa `size()` para `flyout::place`.
+
+| Regra | Fonte |
+|---|---|
+| Presenter com padding 0,2,0,2; item com margem 4,2,4,2 e padding 11,4,11,5 (mouse, caneta e teclado); separador 1 DIP com padding −4,1,−4,1; largura mínima 96 e altura mínima 32 | [`MenuFlyout_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/MenuFlyout_themeresources.xaml) |
+| Item: texto Body 14 em `TextFillColorPrimary`, fundo `SubtleFillColorSecondary` no hover e `SubtleFillColorTertiary` no pressionado, `TextFillColorDisabled` quando desabilitado; raio `ControlCornerRadius` 4 | idem + [`Common_themeresources_any.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/Common_themeresources_any.xaml) |
+| Atalho: Caption 12 em `TextFillColorSecondary`, alinhado à direita com 24 DIPs de folga antes dele | idem (`KeyboardAcceleratorTextBlock`) |
+| Separador: `DividerStrokeColorDefault` (#15FFFFFF escuro, #0F000000 claro); token novo em `Theme` | idem + `Common_themeresources_any.xaml` |
+| Alto contraste: fundo Highlight, texto HighlightText no hover/pressionado, WindowText em repouso e GrayText no desabilitado | dicionário `HighContrast` |
+| Prioridade visual: Disabled > Pressed > PointerOver > Rest; ponteiro com captura vai só para o alvo do press; o clique só sai se o soltar cair no mesmo item | `MenuFlyoutItem` / `ButtonBase` |
+| Setas/Home/End percorrem só itens habilitados e dão a volta; Espaço/Enter disparam no key up; outra tecla cancela um press de teclado | `MenuFlyoutItem::OnKeyDown`, `ButtonBaseKeyProcess.h` |
+
+A largura cresce com o item mais largo (texto + 24 + atalho, mais margens e paddings), nunca abaixo de 96; a altura é a soma das margens, paddings e alturas naturais de texto, nunca abaixo de 32. Texto alinhado à esquerda e centrado na vertical reusa o formato Body de `ToggleSwitch::text_format` (`Formats::switch`), o mesmo desenho que um `TextBlock` de item precisa.
+
+Exemplo: o botão "Menu" abre um menu com Abrir, Fixar na barra de tarefas, separador, Copiar (atalho Ctrl+C) e Mover para o topo (desabilitado). Reaproveita `open_popup`, a transição, o backdrop e o light dismiss do flyout; `popup_input` destina os eventos ao menu e fecha no item invocado. O `Content` do popup virou um enum para abrigar o `Panel` ou o `MenuFlyout`.
+
+Limites: sem submenu, ícone, checkbox/radio, mnemonic, `MenuFlyout` de contexto ligado ao clique direito, seleção inicial ao abrir, Tab para fechar e provider UIA próprio (o mesmo limite do conteúdo do flyout). O padding do presenter é aplicado às posições dos itens; a borda e o fundo ainda vêm do `flyout::draw_chrome`, que cobre a janela inteira (`flyout::PADDING` só posiciona os filhos do flyout de conteúdo).
+
 ## Panel (roteamento comum)
 
 `panel::Panel` guarda os controles em ordem de Tab e faz o roteamento que toda janela precisa; antes isso vivia copiado no exemplo.
@@ -353,9 +374,9 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 - [x] Eventos UIA de BoundingRectangle (troca de DPI) e ToggleState; IsEnabled não muda em tempo de execução no exemplo
 - [x] Narrador: com o `buttons` aberto, Tab por todos os controles e Espaço nos de alternar funcionaram (relato do usuário, 2026-11-22; sem transcrição da fala). NVDA não testado
 - [x] Texto sem alocação no heap por frame: rótulos de até 128 unidades UTF-16 são codificados na pilha (`with_wide`); só textos maiores alocam
-- [x] Slider, CheckBox de três estados, `Panel`, Flyout (com popup acrílico, animação do sistema e light dismiss)
+- [x] Slider, CheckBox de três estados, `Panel`, Flyout (com popup acrílico, animação do sistema e light dismiss), MenuFlyout (itens, atalhos, teclado)
 - [ ] Teste com NVDA; UIA do conteúdo de flyouts e popups; cache do layout de texto
-- [ ] Tudo o que falta para substituir o `explorer.exe` (layout, TextBox, MenuFlyout, ListView, ícones, barra de tarefas, Iniciar, bandeja, desktop): ver o [ROADMAP.md](ROADMAP.md)
+- [ ] Tudo o que falta para substituir o `explorer.exe` (TextBox, ListView, ícones, barra de tarefas, Iniciar, bandeja, desktop): ver o [ROADMAP.md](ROADMAP.md)
 - Fora do escopo: Mica no Win10/Win11 21H2 (a meta é o Win11 atual)
 
 ## Licença
