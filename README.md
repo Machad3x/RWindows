@@ -108,6 +108,14 @@ Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As 
 
 Testes: 16 com objetos COM reais numa janela oculta (navegação, propriedades, pixels de tela, hit test, foco, runtime ids, Invoke assíncrono e desabilitado, elemento removido).
 
+Integração (`examples/buttons.rs`): thread de UI em STA (`CoInitializeEx(COINIT_APARTMENTTHREADED)`); `WM_GETOBJECT` com `UiaRootObjectId` devolve a raiz; o modelo é sincronizado a cada render; eventos `AutomationFocusChanged` e `Invoke_Invoked` (só quando `UiaClientsAreListening`); `UiaReturnRawElementProvider(hwnd, 0, 0, NULL)` no `WM_DESTROY`.
+
+Verificado com um cliente UIA real (`System.Windows.Automation`): 4 botões encontrados, com tipo localizado "botão", ids únicos, IsEnabled/IsKeyboardFocusable corretos e retângulos em pixels de tela. `FromPoint` acerta o botão, `SetFocus` move o foco, Invoke clica (a tela mostra "Clicou: Salvar") e Invoke em botão desabilitado dá `ElementNotEnabledException`. Com UIA ativo: 51.0 MB, 18 threads (o runtime do UIA cria threads próprias), 0 ms de CPU parado.
+
+Observado e sem documentação: o cliente .NET chama `SetFocus` no botão antes do `Invoke`, então o foco vai para o botão invocado. O provider obedece o pedido. Não está confirmado se quem pede é o cliente gerenciado ou o UIA core.
+
+Pendente: evento `IsEnabled` alterado (o exemplo não muda isso em tempo de execução), evento de `BoundingRectangle` ao redimensionar e teste com Narrador e NVDA.
+
 ## Tipografia
 
 Altura de linha natural medida pelo teste `every_ramp_step_should_have_a_natural_line_taller_than_its_size` (`cargo test -- --nocapture`), comparada com a especificação de design:
@@ -143,7 +151,8 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 - [x] Line height do type ramp: resolvido seguindo o WinUI, que não força `LineHeight` (ver Tipografia)
 - [x] Acento e tema por API documentada (`UISettings`)
 - [x] Recuperar device perdido (reset de GPU, troca de driver, RDP)
-- [ ] Button: UI Automation (acessibilidade para leitor de tela) e alto contraste
+- [x] Button: UI Automation (fragmentos, Invoke, foco), verificado com cliente UIA real
+- [ ] Button: alto contraste; eventos UIA de IsEnabled/BoundingRectangle; teste com Narrador/NVDA
 - [ ] Uma alocação UTF-16 por texto por frame
 - Fora do escopo: Mica no Win10/Win11 21H2 (a meta é o Win11 atual)
 

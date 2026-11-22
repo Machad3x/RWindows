@@ -1,19 +1,28 @@
 //! WinUI buttons on Mica: default, accent and disabled. Tab / Shift+Tab move
 //! keyboard focus (focus ring), Space / Enter invoke, the mouse captures while
 //! pressed. Idle = blocked in GetMessageW; frames render only during transitions.
+//! UI Automation: the buttons appear to Narrator / NVDA / Inspect as Button
+//! elements with Invoke, through `fluent_win::uia`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use fluent_win::backdrop;
 use fluent_win::button::{Button, FocusKind, Input, Key, Response};
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::theme::{self, Theme};
+use fluent_win::uia::{self, WM_UIA_FOCUS, WM_UIA_INVOKE};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::ValidateRect;
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Accessibility::{
+    IRawElementProviderSimple, UIA_AutomationFocusChangedEventId, UIA_EVENT_ID, UIA_Invoke_InvokedEventId,
+    UiaClientsAreListening, UiaRaiseAutomationEvent, UiaReturnRawElementProvider, UiaRootObjectId,
+};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetProcessDpiAwarenessContext,
@@ -26,7 +35,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
     LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
     SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_CAPTURECHANGED, WM_DESTROY,
-    WM_DPICHANGED,
+    WM_DPICHANGED, WM_GETOBJECT,
     WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
     WM_QUIT, WM_SETTINGCHANGE, WM_SIZE, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
     WS_VISIBLE,
@@ -46,14 +55,18 @@ struct App {
     focused: Option<usize>,
     status: String,
     tracking: bool,
+    uia: uia::Shared,
 }
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+    /// Kept outside APP: WM_GETOBJECT can arrive while APP is borrowed.
+    static UIA: RefCell<Option<uia::Shared>> = const { RefCell::new(None) };
 }
 
 impl App {
     fn render(&mut self) -> Result<()> {
+        self.sync_uia();
         let (s, t) = (&mut self.surface, &self.theme);
         s.begin();
         for b in &self.buttons {
@@ -61,6 +74,36 @@ impl App {
         }
         s.text(&self.status, &self.body, rect(PAD, 96.0, PAD + 500.0, 120.0), t.text_secondary);
         s.end()
+    }
+
+    /// Copies what UI Automation exposes into the shared model.
+    fn sync_uia(&self) {
+        let mut m = self.uia.borrow_mut();
+        m.hwnd = self.hwnd;
+        m.scale = self.surface.scale();
+        m.focused = self.focused;
+        m.items = self.buttons.iter().map(|b| uia::Item {
+            name: b.label.clone(),
+            rect: b.rect,
+            enabled: b.visual() != fluent_win::button::Visual::Disabled,
+        }).collect();
+    }
+
+    /// Raises a UIA event on button `i` (after syncing the model it will be read from).
+    fn raise(&self, i: usize, event: UIA_EVENT_ID) {
+        if !unsafe { UiaClientsAreListening() }.as_bool() {
+            return;
+        }
+        self.sync_uia();
+        if let Err(e) = unsafe { UiaRaiseAutomationEvent(&uia::item(&self.uia, i), event) } {
+            eprintln!("fluent-win buttons: UIA event: {e}");
+        }
+    }
+
+    /// Button `i` was invoked (pointer, keyboard or UI Automation).
+    fn clicked(&mut self, i: usize) {
+        self.status = format!("Clicou: {}", self.buttons[i].label);
+        self.raise(i, UIA_Invoke_InvokedEventId);
     }
 
     fn animating(&self) -> bool {
@@ -107,7 +150,7 @@ impl App {
             self.focused = None;
         }
         if r.clicked {
-            self.status = format!("Clicou: {}", self.buttons[i].label);
+            self.clicked(i);
             redraw = true;
         }
         Ok(redraw)
@@ -122,10 +165,14 @@ impl App {
             self.capture(blur.capture)?;
             redraw |= blur.redraw;
         }
+        let changed = self.focused != to;
         if let Some(new) = to {
             redraw |= self.buttons[new].handle(Input::Focus(kind)).redraw;
         }
         self.focused = to;
+        if let Some(new) = to.filter(|_| changed) {
+            self.raise(new, UIA_AutomationFocusChangedEventId);
+        }
         Ok(redraw)
     }
 
@@ -255,7 +302,34 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 a.render()
             });
         }
-        WM_DESTROY => unsafe { PostQuitMessage(0) },
+        WM_GETOBJECT if lp.0 as i32 == UiaRootObjectId => {
+            let root = UIA.with(|u| u.borrow().as_ref().map(uia::root));
+            if let Some(root) = root {
+                return unsafe { UiaReturnRawElementProvider(hwnd, wp, lp, &root) };
+            }
+            return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
+        }
+        // Posted by IInvokeProvider::Invoke: run the click outside the UIA call.
+        WM_UIA_INVOKE => with_app(|a| {
+            let i = wp.0;
+            if a.buttons.get(i).is_some_and(|b| b.visual() != fluent_win::button::Visual::Disabled) {
+                a.clicked(i);
+                a.render()?;
+            }
+            Ok(())
+        }),
+        // Posted by IRawElementProviderFragment::SetFocus (UIA already focused the window).
+        WM_UIA_FOCUS => with_app(|a| {
+            if wp.0 < a.buttons.len() && a.move_focus(Some(wp.0), FocusKind::Keyboard)? {
+                a.render()?;
+            }
+            Ok(())
+        }),
+        WM_DESTROY => unsafe {
+            // Releases the provider map UIA keeps for MSAA clients (Learn: UiaReturnRawElementProvider).
+            UiaReturnRawElementProvider(hwnd, WPARAM(0), LPARAM(0), None::<&IRawElementProviderSimple>);
+            PostQuitMessage(0);
+        },
         _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
     LRESULT(0)
@@ -263,6 +337,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 
 fn main() -> Result<()> {
     unsafe {
+        // STA: UIA providers use ProviderOptions_UseComThreading and are called on this thread.
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?;
         let instance = GetModuleHandleW(None)?;
         let class = w!("fluent-win-buttons");
@@ -304,7 +380,9 @@ fn main() -> Result<()> {
             focused: None,
             status: "Tab para focar, Espaço/Enter para clicar".to_owned(),
             tracking: false,
+            uia: Rc::new(RefCell::new(uia::Model::default())),
         };
+        UIA.with(|u| *u.borrow_mut() = Some(app.uia.clone()));
         app.render()?;
         APP.with(|cell| *cell.borrow_mut() = Some(app));
 
