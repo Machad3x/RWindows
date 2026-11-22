@@ -25,9 +25,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
-    KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage,
-    WM_CHAR, WM_DESTROY, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_SETFOCUS,
-    WM_TIMER,
+    KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SIZE_MAXIMIZED, SIZE_MINIMIZED,
+    SIZE_RESTORED, SetTimer, TranslateMessage, WM_CHAR, WM_DESTROY, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_SETFOCUS, WM_SIZE, WM_TIMER,
     WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{Result, w};
@@ -212,6 +212,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             a.render()
         }),
         WM_KEYDOWN => with_app(|a| a.key(VIRTUAL_KEY(wp.0 as u16))),
+        WM_SIZE if wp.0 as u32 == SIZE_MINIMIZED => unsafe {
+            // No frames while minimized: the ring animation can wait.
+            _ = KillTimer(Some(hwnd), TIMER);
+            LRESULT(0)
+        },
+        WM_SIZE if wp.0 as u32 == SIZE_RESTORED || wp.0 as u32 == SIZE_MAXIMIZED => unsafe {
+            _ = SetTimer(Some(hwnd), TIMER, 33, None);
+            LRESULT(0)
+        },
         WM_TIMER if wp.0 == TIMER => with_app(|a| {
             a.time += 1.0 / 30.0;
             a.blink = ((a.time * 1.6) as u32).is_multiple_of(2);

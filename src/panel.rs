@@ -424,6 +424,8 @@ impl Panel {
     /// The UI Automation view of the controls.
     pub fn uia_items(&self) -> Vec<uia::Item> {
         self.controls.iter().map(|c| uia::Item {
+            // The Box address is stable when the vector is reordered, unlike the index.
+            id: (c.as_ref() as *const dyn Control).cast::<()>() as usize as u64,
             name: c.name().to_owned(),
             rect: c.rect(),
             enabled: c.enabled(),

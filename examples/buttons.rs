@@ -486,6 +486,7 @@ impl App {
                             focused = Some(map.len() - 1);
                         }
                         items.push(uia::Item {
+                            id: i as u64,
                             name: item.text.clone(), rect: menu.rects[i], enabled: item.enabled,
                             toggle: None, control_type: UIA_MenuItemControlTypeId, range: None,
                         });
@@ -847,7 +848,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             a.apply(out)?;
             a.tip_leave()
         }),
-        WM_TIMER if wp.0 == TIP_TIMER => with_app(App::tip_tick),
+        WM_TIMER if wp.0 == TIP_TIMER => with_app_or_repost(hwnd, msg, wp, App::tip_tick),
         // Another window took the capture: abandon any press (OnPointerCaptureLost).
         WM_CAPTURECHANGED if lp.0 != hwnd.0 as isize => with_app(|a| a.input(Input::CaptureLost)),
         WM_DPICHANGED => {

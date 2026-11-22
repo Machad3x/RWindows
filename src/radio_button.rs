@@ -30,12 +30,22 @@ pub struct RadioButton {
     hot: bool,
     pressed: bool,
     focused: bool,
+    /// Size of the hit area, set by the caller to match the drawn rect.
+    hit_size: (f32, f32),
 }
 
 impl RadioButton {
     /// Creates a radio button, checked or not.
     pub fn new(label: impl Into<String>, checked: bool) -> Self {
-        Self { label: label.into(), checked, enabled: true, hot: false, pressed: false, focused: false }
+        Self {
+            label: label.into(), checked, enabled: true, hot: false, pressed: false, focused: false,
+            hit_size: (MIN_WIDTH, ROW_HEIGHT),
+        }
+    }
+
+    /// Sets the hit area (width, height) to the size this radio is drawn at.
+    pub fn set_hit_size(&mut self, width: f32, height: f32) {
+        self.hit_size = (width.max(0.0), height.max(0.0));
     }
 
     /// Sets `IsChecked` directly (used by [`check_one`]).
@@ -85,7 +95,7 @@ impl RadioButton {
 
     fn hit(&self, x: f32, y: f32) -> bool {
         // The template's root grid is the hit target, not just the ellipse.
-        x >= 0.0 && y >= 0.0 && x <= MIN_WIDTH && y <= ROW_HEIGHT
+        x >= 0.0 && y >= 0.0 && x <= self.hit_size.0 && y <= self.hit_size.1
     }
 
     /// Draws the ellipse and the left-aligned content.
@@ -144,6 +154,16 @@ mod tests {
         r.handle(Input::Focus(FocusKind::Keyboard));
         r.handle(Input::KeyDown(Key::Space));
         assert!(r.handle(Input::KeyUp(Key::Space)));
+    }
+
+    #[test]
+    fn hit_area_should_follow_the_size_set_by_the_caller() {
+        let mut r = RadioButton::new("A", false);
+        r.set_hit_size(60.0, 24.0);
+        r.handle(Input::PointerDown(100.0, 10.0));
+        assert!(!r.focused);
+        r.handle(Input::PointerDown(10.0, 10.0));
+        assert!(r.focused);
     }
 
     #[test]

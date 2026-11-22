@@ -56,10 +56,6 @@ impl IconCache {
         Ok(&self.entries[&key])
     }
 
-    /// Drops cached bitmaps (e.g. before a device reset).
-    pub fn clear(&mut self) {
-        self.entries.clear();
-    }
 }
 
 fn load(surface: &Surface, path: &str, size: u32) -> Result<ID2D1Bitmap1> {

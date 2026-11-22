@@ -38,6 +38,8 @@ pub const WM_UIA_FOCUS: u32 = WM_APP + 0x56;
 /// One control as UI Automation sees it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
+    /// Stable identity of the control. Providers keep this, not the array index.
+    pub id: u64,
     /// `Name` (the label).
     pub name: String,
     /// Bounds in client DIPs.
@@ -103,14 +105,19 @@ pub fn root(model: &Shared) -> IRawElementProviderSimple {
 
 /// Provider of control `index` (for raising events on it).
 pub fn item(model: &Shared, index: usize) -> IRawElementProviderSimple {
-    ItemProvider { model: model.clone(), index }.into()
+    ItemProvider { model: model.clone(), id: id_at(model, index) }.into()
+}
+
+/// Stable id of `index`, or `u64::MAX` when the control is gone.
+fn id_at(model: &Shared, index: usize) -> u64 {
+    model.borrow().items.get(index).map_or(u64::MAX, |item| item.id)
 }
 
 /// `BoundingRectangle` of control `index` as the property value UIA expects
 /// (`VT_ARRAY | VT_R8`: left, top, width, height in screen pixels), for
 /// `UiaRaiseAutomationPropertyChangedEvent` after a DPI change moves it.
 pub fn bounds_variant(model: &Shared, index: usize) -> Result<VARIANT> {
-    let fragment: IRawElementProviderFragment = ItemProvider { model: model.clone(), index }.into();
+    let fragment: IRawElementProviderFragment = ItemProvider { model: model.clone(), id: id_at(model, index) }.into();
     let r = unsafe { fragment.BoundingRectangle()? };
     let parts = [r.left, r.top, r.width, r.height];
     let mut v = VARIANT::default();
@@ -138,7 +145,7 @@ struct Root {
 #[implement(IRawElementProviderSimple, IRawElementProviderFragment, IInvokeProvider, IToggleProvider, IRangeValueProvider)]
 struct ItemProvider {
     model: Shared,
-    index: usize,
+    id: u64,
 }
 
 /// `Err(Error::empty())` is how windows-rs returns S_OK with a null interface.
@@ -152,7 +159,7 @@ fn null<T>() -> Result<T> {
 const OPTIONS: ProviderOptions = ProviderOptions(ProviderOptions_ServerSideProvider.0 | ProviderOptions_UseComThreading.0);
 
 fn fragment_of(model: &Shared, index: usize) -> Result<IRawElementProviderFragment> {
-    Ok(ItemProvider { model: model.clone(), index }.into())
+    Ok(ItemProvider { model: model.clone(), id: id_at(model, index) }.into())
 }
 
 fn root_fragment(model: &Shared) -> Result<IRawElementProviderFragmentRoot> {
@@ -235,9 +242,16 @@ impl IRawElementProviderFragmentRoot_Impl for Root_Impl {
 }
 
 impl ItemProvider_Impl {
+    /// Current array index of this provider's stable id.
+    fn index(&self) -> Result<usize> {
+        self.model.borrow().items.iter().position(|item| item.id == self.id)
+            .ok_or_else(|| Error::from(NOT_AVAILABLE))
+    }
+
     /// The control this provider stands for, or `UIA_E_ELEMENTNOTAVAILABLE` once it is gone.
     fn info(&self) -> Result<Item> {
-        self.model.borrow().items.get(self.index).cloned().ok_or_else(|| Error::from(NOT_AVAILABLE))
+        let index = self.index()?;
+        Ok(self.model.borrow().items[index].clone())
     }
 
     /// RangeValue data of this control (`UIA_E_ELEMENTNOTAVAILABLE` without it).
@@ -246,8 +260,9 @@ impl ItemProvider_Impl {
     }
 
     fn post(&self, msg: u32) -> Result<()> {
+        let index = self.index()?;
         let hwnd = self.model.borrow().hwnd;
-        unsafe { PostMessageW(Some(hwnd), msg, WPARAM(self.index), LPARAM(0)) }
+        unsafe { PostMessageW(Some(hwnd), msg, WPARAM(index), LPARAM(0)) }
     }
 }
 
@@ -272,12 +287,12 @@ impl IRawElementProviderSimple_Impl for ItemProvider_Impl {
 
     fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> Result<VARIANT> {
         let item = self.info()?;
-        let focused = self.model.borrow().focused == Some(self.index);
+        let focused = self.model.borrow().focused == Some(self.index()?);
         Ok(match id {
             UIA_ControlTypePropertyId => VARIANT::from(item.control_type.0),
             UIA_NamePropertyId => VARIANT::from(item.name.as_str()),
             // Unique among peers (Button control type requirement).
-            UIA_AutomationIdPropertyId => VARIANT::from(format!("button-{}", self.index).as_str()),
+            UIA_AutomationIdPropertyId => VARIANT::from(format!("button-{}", self.id).as_str()),
             UIA_IsEnabledPropertyId => VARIANT::from(item.enabled),
             UIA_IsKeyboardFocusablePropertyId => VARIANT::from(item.enabled),
             UIA_HasKeyboardFocusPropertyId => VARIANT::from(focused),
@@ -296,12 +311,12 @@ impl IRawElementProviderSimple_Impl for ItemProvider_Impl {
 
 impl IRawElementProviderFragment_Impl for ItemProvider_Impl {
     fn Navigate(&self, direction: NavigateDirection) -> Result<IRawElementProviderFragment> {
-        self.info()?;
+        let index = self.index()?;
         let n = self.model.borrow().items.len();
         match direction {
             NavigateDirection_Parent => root_fragment(&self.model)?.cast(),
-            NavigateDirection_NextSibling if self.index + 1 < n => fragment_of(&self.model, self.index + 1),
-            NavigateDirection_PreviousSibling if self.index > 0 => fragment_of(&self.model, self.index - 1),
+            NavigateDirection_NextSibling if index + 1 < n => fragment_of(&self.model, index + 1),
+            NavigateDirection_PreviousSibling if index > 0 => fragment_of(&self.model, index - 1),
             _ => null(),
         }
     }
@@ -309,7 +324,7 @@ impl IRawElementProviderFragment_Impl for ItemProvider_Impl {
     fn GetRuntimeId(&self) -> Result<*mut SAFEARRAY> {
         self.info()?;
         // {UiaAppendRuntimeId, unique value}; UIA prefixes the host window's id.
-        let parts = [UiaAppendRuntimeId as i32, self.index as i32 + 1];
+        let parts = [UiaAppendRuntimeId as i32, self.id as i32];
         unsafe {
             let sa = SafeArrayCreateVector(VT_I4, 0, parts.len() as u32);
             if sa.is_null() {
@@ -393,7 +408,8 @@ impl IRangeValueProvider_Impl for ItemProvider_Impl {
             return Err(Error::from(E_INVALIDARG));
         }
         let hwnd = self.model.borrow().hwnd;
-        unsafe { PostMessageW(Some(hwnd), WM_UIA_SET_VALUE, WPARAM(self.index), LPARAM(value.to_bits() as isize)) }
+        let index = self.index()?;
+        unsafe { PostMessageW(Some(hwnd), WM_UIA_SET_VALUE, WPARAM(index), LPARAM(value.to_bits() as isize)) }
     }
     fn Value(&self) -> Result<f64> {
         Ok(self.range()?.value)
@@ -434,9 +450,9 @@ mod tests {
             hwnd,
             scale,
             items: vec![
-                Item { name: "Configurações".into(), rect: rect(10.0, 10.0, 110.0, 42.0), enabled: true, toggle: None, control_type: UIA_ButtonControlTypeId, range: None },
-                Item { name: "Salvar".into(), rect: rect(120.0, 10.0, 180.0, 42.0), enabled: true, toggle: None, control_type: UIA_ButtonControlTypeId, range: None },
-                Item { name: "Desabilitado".into(), rect: rect(190.0, 10.0, 290.0, 42.0), enabled: false, toggle: None, control_type: UIA_ButtonControlTypeId, range: None },
+                Item { id: 1, name: "Configurações".into(), rect: rect(10.0, 10.0, 110.0, 42.0), enabled: true, toggle: None, control_type: UIA_ButtonControlTypeId, range: None },
+                Item { id: 2, name: "Salvar".into(), rect: rect(120.0, 10.0, 180.0, 42.0), enabled: true, toggle: None, control_type: UIA_ButtonControlTypeId, range: None },
+                Item { id: 3, name: "Desabilitado".into(), rect: rect(190.0, 10.0, 290.0, 42.0), enabled: false, toggle: None, control_type: UIA_ButtonControlTypeId, range: None },
             ],
             focused: Some(1),
         }))
@@ -594,6 +610,22 @@ mod tests {
         assert!(!a.is_null() && !b.is_null() && read_i32s(a) != read_i32s(b));
     }
 
+    #[test]
+    fn provider_should_follow_its_control_after_a_reorder() {
+        let m = model(1.0);
+        let first: IRawElementProviderFragment = item(&m, 0).cast().unwrap();
+        assert_eq!(name_of(&first), "Configurações");
+        m.borrow_mut().items.swap(0, 1);
+        // The client still holds the provider for id 1, now at index 1.
+        assert_eq!(name_of(&first), "Configurações");
+        let simple: IRawElementProviderSimple = first.cast().unwrap();
+        let invoke: IInvokeProvider = unsafe { simple.GetPatternProvider(UIA_InvokePatternId) }
+            .unwrap().cast().unwrap();
+        unsafe { invoke.Invoke().unwrap() };
+        let (index, _) = take_posted(m.borrow().hwnd, WM_UIA_INVOKE).unwrap();
+        assert_eq!(index, WPARAM(1));
+    }
+
     fn read_i32s(sa: *mut SAFEARRAY) -> Vec<i32> {
         use windows::Win32::System::Ole::{SafeArrayDestroy, SafeArrayGetElement, SafeArrayGetUBound};
         unsafe {
@@ -645,7 +677,7 @@ mod tests {
 
     /// Appends toggle button 3 (`checked`, `enabled`).
     fn with_toggle(m: &Shared, checked: bool, enabled: bool) -> usize {
-        let item = Item { name: "Wi-Fi".into(), rect: rect(300.0, 10.0, 360.0, 42.0), enabled, toggle: Some(if checked { ToggleState_On } else { ToggleState_Off }), control_type: UIA_ButtonControlTypeId, range: None };
+        let item = Item { id: 4, name: "Wi-Fi".into(), rect: rect(300.0, 10.0, 360.0, 42.0), enabled, toggle: Some(if checked { ToggleState_On } else { ToggleState_Off }), control_type: UIA_ButtonControlTypeId, range: None };
         m.borrow_mut().items.push(item);
         3
     }
@@ -700,6 +732,7 @@ mod tests {
     fn with_slider(m: &Shared, enabled: bool) -> usize {
         let range = Range { value: 40.0, minimum: 0.0, maximum: 100.0, small_change: 1.0, large_change: 10.0 };
         let item = Item {
+            id: 5,
             name: "Volume".into(), rect: rect(300.0, 10.0, 500.0, 42.0), enabled, toggle: None,
             control_type: UIA_SliderControlTypeId, range: Some(range),
         };

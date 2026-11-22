@@ -7,8 +7,6 @@ use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use crate::gfx::{Surface, rect};
 use crate::theme::Theme;
 
-/// `ProgressBarMinHeight` / `ProgressBarTrackHeight`.
-pub const BAR_HEIGHT: f32 = 3.0;
 /// `ProgressBarTrackHeight`.
 pub const TRACK_HEIGHT: f32 = 1.0;
 /// `ProgressBarCornerRadius` / `ProgressBarTrackCornerRadius`.

@@ -322,7 +322,7 @@ Falta: barra de rolagem desenhada, PageUp/PageDown, seleção múltipla, arrasta
 
 ## UIA de popups
 
-A janela popup tem seu próprio fragmento UIA (`WM_GETOBJECT` em `popup_proc`), com o modelo mantido fora do `APP` para chamadas reentrantes. No MenuFlyout, cada `MenuFlyoutItem` aparece como `MenuItem` com `Name` e `IsEnabled` corretos; `Invoke` roteia para o item pelo índice real (separadores não são expostos) e fecha o menu, e `HasKeyboardFocus` acompanha a navegação. Verificado com cliente .NET UIAutomation real: 4 itens encontrados, estados corretos e `Invoke` em "Copiar" produziu "Clicou: Copiar". Falta expor os controles do flyout de conteúdo (ToggleSwitch/Slider), a dica do ToolTip e o padrão SelectionItem.
+A janela popup tem seu próprio fragmento UIA (`WM_GETOBJECT` em `popup_proc`), com o modelo mantido fora do `APP` para chamadas reentrantes. No MenuFlyout, cada `MenuFlyoutItem` aparece como `MenuItem` com `Name` e `IsEnabled` corretos; `Invoke` roteia para o item pelo índice real (separadores não são expostos) e fecha o menu, e `HasKeyboardFocus` acompanha a navegação. Verificado com cliente .NET UIAutomation real: 4 itens encontrados, estados corretos e `Invoke` em "Copiar" produziu "Clicou: Copiar". Os providers guardam um id estável (endereço do controle no `Panel`, índice da entrada no menu), não a posição no array, então reordenar controles não troca o nome/ação de um provider já entregue a um cliente. Falta expor os controles do flyout de conteúdo (ToggleSwitch/Slider), a dica do ToolTip e o padrão SelectionItem.
 
 ## Ícones reais
 
@@ -340,7 +340,7 @@ O clipboard usa um guarda que sempre fecha a clipboard, limita a varredura UTF-1
 
 ## RadioButton, ProgressBar e ProgressRing
 
-`radio_button::RadioButton` segue o `DefaultRadioButtonStyle`: elipse 20, glifo 12 (14 no hover, 10 no pressed), linha 32, padding 8,6 e largura mínima 120. `check_one()` mantém a seleção única do grupo. `progress::ProgressBar` usa trilho de 1 DIP em `ControlStrongStrokeColorDefault` e preenchimento `AccentFillColorDefault`, com altura mínima 3 e raio 1,5/0,5. `progress::ProgressRing` desenha o arco indeterminado (≈300°) com `AccentFillColorDefault` e traço de 4 DIPs; o tempo vem do app, então não há frames extras quando nada muda. O exemplo `examples/progress.rs` mostra os três controles; verificado visualmente (clique troca o rádio do grupo, barra em 60%, anel animado).
+`radio_button::RadioButton` segue o `DefaultRadioButtonStyle`: elipse 20, glifo 12 (14 no hover, 10 no pressed), linha 32, padding 8,6 e largura mínima 120. `check_one()` mantém a seleção única do grupo. `progress::ProgressBar` usa trilho de 1 DIP em `ControlStrongStrokeColorDefault` e preenchimento `AccentFillColorDefault`, com altura mínima 3 e raio 1,5/0,5. `progress::ProgressRing` desenha o arco indeterminado (≈300°) com `AccentFillColorDefault` e traço de 4 DIPs; o tempo vem do app, então não há frames extras quando nada muda. O exemplo `examples/progress.rs` mostra os três controles; verificado visualmente (clique troca o rádio do grupo, barra em 60%, anel animado). O timer de 33 ms para quando a janela é minimizada, para não acordar o processo 30 vezes por segundo sem desenho.
 
 Falta: animações de contração do glifo, `Paused`/`Error` do ProgressBar e UIA (RadioButton/SelectionItem, RangeValue/Value).
 
