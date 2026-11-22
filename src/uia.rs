@@ -84,6 +84,9 @@ struct ItemProvider {
 }
 
 /// `Err(Error::empty())` is how windows-rs returns S_OK with a null interface.
+/// The shim does not write the out pointer, so the caller's zero-initialized slot
+/// stays NULL: true for UIA core, NDR stubs (the UseComThreading path) and
+/// windows-rs callers. A raw caller passing an uninitialized slot would misread it.
 fn null<T>() -> Result<T> {
     Err(Error::empty())
 }
