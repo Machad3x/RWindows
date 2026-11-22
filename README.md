@@ -436,6 +436,17 @@ Demo em release, Windows 11 (build 26300), janela de 4 tiles com Mica:
 
 A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UISettings` (WinRT) e `IDWriteFactory6` somaram cerca de 1 MB em relação à versão com registro (45.7 MB).
 
+## Verificações não feitas
+
+Quatro caminhos ficaram sem verificação prática nesta máquina, por limites concretos:
+
+| Caminho | Por que não foi verificado | Como verificar |
+|---|---|---|
+| Perda real de GPU (`DXGI_ERROR_DEVICE_REMOVED`) | Forçar exige mexer no driver (desativar GPU, Driver Verifier ou hooks de kernel), com admin e risco de derrubar a sessão | VM ou conta de teste com admin; o classificador e a recriação já foram testados em janela oculta |
+| DPI ao vivo entre monitores | Os dois monitores desta máquina reportam 96/96 DPI; não existe mixed-DPI aqui | Definir escala diferente no segundo monitor e arrastar a janela; a troca 125% → 150% no mesmo monitor já foi testada |
+| Consumidores da biblioteca fora dos exemplos | O repositório não tem crate downstream; só os quatro exemplos compilam contra `fluent-win` | Criar crate temporário com dependência por caminho (smoke test da API pública); o uso num shell real depende da Fase 2+ |
+| Clipboard com formatos além de `CF_UNICODETEXT` | O `TextBox` só implementa `CF_UNICODETEXT`; outros formatos não são suportados por decisão de escopo | Testar que paste falha graciosamente com clipboard binário; suporte real exigiria implementar os formatos |
+
 ## Pendências
 
 - [x] Line height do type ramp: resolvido seguindo o WinUI, que não força `LineHeight` (ver Tipografia)
