@@ -4,10 +4,9 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_WEIGHT_SEMI_BOLD,
 };
-use windows::Win32::System::Registry::{
-    HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
-};
-use windows::core::{PCWSTR, w};
+use windows::UI::Color;
+use windows::UI::ViewManagement::{UIColorType, UISettings};
+use windows::core::{PCWSTR, Result, w};
 
 /// WinUI `ControlCornerRadius` (buttons, text boxes, list items).
 pub const CONTROL_RADIUS: f32 = 4.0;
@@ -86,23 +85,32 @@ impl Theme {
         subtle_pressed: argb(0x06000000),
     };
 
-    /// Current user's app theme and accent, read from the registry.
-    /// Falls back to [`Theme::LIGHT`] / default accent when keys are missing.
+    /// Current app theme and accent from `UISettings`, the documented source
+    /// WinUI itself uses. Falls back to [`Theme::LIGHT`] if WinRT is unavailable.
     pub fn system() -> Theme {
-        let light = reg_dword(
-            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
-            w!("AppsUseLightTheme"),
-        )
-        .is_none_or(|v| v != 0);
-        let mut theme = if light { Self::LIGHT } else { Self::DARK };
-        if let Some(palette) = accent_palette() {
-            // AccentPalette = Light3, Light2, Light1, Base, Dark1, Dark2, Dark3, unused.
-            // WinUI AccentFillColorDefault: Light2 in dark theme, Dark1 in light theme.
-            let [r, g, b, _] = palette[if light { 4 } else { 1 }];
-            theme.accent = argb(0xFF00_0000 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b));
-        }
-        theme
+        Self::from_ui_settings().unwrap_or(Self::LIGHT)
     }
+
+    fn from_ui_settings() -> Result<Theme> {
+        // No apartment setup needed: windows-core joins the MTA on CO_E_NOTINITIALIZED.
+        let ui = UISettings::new()?;
+        // Documented check: a light foreground means the dark theme is active.
+        let dark = is_light(ui.GetColorValue(UIColorType::Foreground)?);
+        let mut theme = if dark { Self::DARK } else { Self::LIGHT };
+        // WinUI AccentFillColorDefault: SystemAccentColorLight2 (dark), SystemAccentColorDark1 (light).
+        let shade = if dark { UIColorType::AccentLight2 } else { UIColorType::AccentDark1 };
+        theme.accent = color(ui.GetColorValue(shade)?);
+        Ok(theme)
+    }
+}
+
+/// `IsColorLight` from "Apply Windows themes" (Learn): perceived brightness check.
+fn is_light(c: Color) -> bool {
+    5 * u32::from(c.G) + 2 * u32::from(c.R) + u32::from(c.B) > 8 * 128
+}
+
+fn color(c: Color) -> D2D1_COLOR_F {
+    argb(u32::from_be_bytes([c.A, c.R, c.G, c.B]))
 }
 
 /// Typographic family used by WinUI (`XamlAutoFontFamily` resolves to it).
@@ -145,32 +153,6 @@ pub const DISPLAY: Ramp = Ramp { size: 68.0, weight: SEMIBOLD };
 /// Every ramp step, smallest first.
 pub const RAMP: [Ramp; 8] = [CAPTION, BODY, BODY_STRONG, BODY_LARGE, SUBTITLE, TITLE, TITLE_LARGE, DISPLAY];
 
-fn reg_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
-    let mut value = 0u32;
-    let mut len = size_of::<u32>() as u32;
-    unsafe {
-        RegGetValueW(HKEY_CURRENT_USER, key, name, RRF_RT_REG_DWORD, None,
-            Some((&raw mut value).cast()), Some(&mut len))
-    }
-    .ok()
-    .ok()?;
-    Some(value)
-}
-
-fn accent_palette() -> Option<[[u8; 4]; 8]> {
-    let mut palette = [[0u8; 4]; 8];
-    let mut len = size_of_val(&palette) as u32;
-    unsafe {
-        RegGetValueW(HKEY_CURRENT_USER,
-            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Accent"),
-            w!("AccentPalette"), RRF_RT_REG_BINARY, None,
-            Some(palette.as_mut_ptr().cast()), Some(&mut len))
-    }
-    .ok()
-    .ok()?;
-    (len as usize == size_of_val(&palette)).then_some(palette)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +161,11 @@ mod tests {
     fn argb_should_split_channels() {
         let c = argb(0x80FF0000);
         assert!((c.a - 128.0 / 255.0).abs() < 1e-6 && c.r == 1.0 && c.g == 0.0 && c.b == 0.0);
+    }
+
+    #[test]
+    fn is_light_should_split_white_and_black_foregrounds() {
+        let rgb = |v| Color { A: 255, R: v, G: v, B: v };
+        assert!(is_light(rgb(255)) && !is_light(rgb(0)));
     }
 }
