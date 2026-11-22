@@ -77,12 +77,12 @@ Demo em release, Windows 11 (build 26300), janela de 4 tiles com Mica:
 
 | | fluent-win demo | explorer.exe |
 |---|---|---|
-| Working set | 45.7 MB | 327.7 MB |
-| CPU parado | 0% | — |
+| Working set | 46.7 MB | 327.7 MB |
+| CPU parado (3 s, também depois de minimizar/restaurar) | 0 ms | — |
 | Threads | 14 | — |
-| Tamanho do exe | 146 KB | — |
+| Tamanho do exe | 151 KB | — |
 
-A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo.
+A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UISettings` (WinRT) e `IDWriteFactory6` somaram cerca de 1 MB em relação à versão com registro (45.7 MB).
 
 ## Pendências
 
