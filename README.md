@@ -58,6 +58,21 @@ Cada decisão registra o motivo e a fonte. "Não verificado" quer dizer que vem 
 | Constantes `DARK.accent` #60CDFF / `LIGHT.accent` #005FB8 | Só usadas se o WinRT falhar. São os valores de design do WinUI. O Learn não publica as variações do azul padrão do Win11 | Não verificado |
 | **Sem** `LineHeight` forçado: a linha usa as métricas naturais da fonte | Os estilos do WinUI não definem `LineHeight` (só `LineStackingStrategy=MaxHeight`), então o Win11 real usa a altura natural. Os valores 16/20/28… são da especificação de design | [`TextBlock_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/TextBlock_themeresources.xaml), [LineStackingStrategy](https://learn.microsoft.com/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.linestackingstrategy) |
 
+## Button
+
+Reproduz o `Button` do WinUI (`DefaultButtonStyle` e `AccentButtonStyle`). A entrada segue o `ButtonBase` com `ClickMode.Release`, o padrão. Cada regra tem teste em `src/button.rs`.
+
+| Regra | Fonte |
+|---|---|
+| Prioridade visual: Disabled > Pressed > PointerOver > Rest | `ButtonBase` (`UpdateVisualState`) |
+| Apertar dentro: captura o ponteiro, Pressed, foco tipo ponteiro (sem anel) | `ButtonBase_Partial.cpp` |
+| Com o botão apertado, sair dos limites (tolerância 0.05 DIP) desliga Pressed e voltar religa. O clique só sai se ainda estiver Pressed ao soltar | `OnPointerMoved` / `IsValidPointerPosition` |
+| Space/Enter com foco: Pressed no key down, clique no key up. Outra tecla no meio cancela. Ignorado com o ponteiro capturado | `ButtonBaseKeyProcess.h` |
+| Perder o foco cancela o press e solta a captura. Desabilitar zera Pressed e PointerOver | `OnLostFocus`, `OnIsEnabledChanged` |
+| Anel de foco só com foco de teclado | [Keyboard interactions: focus visuals](https://learn.microsoft.com/windows/apps/develop/input/keyboard-interactions#focus-visuals) |
+
+Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As regras de press e release vêm do padrão confirmado em `OnPointerMoved` e `KeyUp`.
+
 ## Tipografia
 
 Altura de linha natural medida pelo teste `every_ramp_step_should_have_a_natural_line_taller_than_its_size` (`cargo test -- --nocapture`), comparada com a especificação de design:

@@ -1,5 +1,6 @@
 //! Windows 11 (Fluent) visuals for raw Win32 windows.
 //!
+//! - [`button`]: WinUI Button (default and accent) with WinUI input rules.
 //! - [`backdrop`]: Mica/Acrylic, rounded corners, dark title bar via DWM.
 //! - [`gfx`]: Direct2D + DirectWrite drawing on a DirectComposition swap chain,
 //!   so transparent pixels show the DWM backdrop.
@@ -8,6 +9,7 @@
 #![deny(missing_docs)]
 
 pub mod backdrop;
+pub mod button;
 pub mod easing;
 pub mod gfx;
 pub mod theme;
