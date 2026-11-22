@@ -30,7 +30,7 @@ const NOT_ENABLED: HRESULT = HRESULT(UIA_E_ELEMENTNOTENABLED as i32);
 /// `UIA_E_ELEMENTNOTAVAILABLE` as an `HRESULT`.
 const NOT_AVAILABLE: HRESULT = HRESULT(UIA_E_ELEMENTNOTAVAILABLE as i32);
 
-/// Posted by `IInvokeProvider::Invoke`; `wParam` = control index.
+/// Posted by `IInvokeProvider::Invoke` and `IToggleProvider::Toggle`; `wParam` = control index.
 pub const WM_UIA_INVOKE: u32 = WM_APP + 0x55;
 /// Posted by `IRawElementProviderFragment::SetFocus`; `wParam` = control index.
 pub const WM_UIA_FOCUS: u32 = WM_APP + 0x56;
@@ -44,6 +44,8 @@ pub struct Item {
     pub rect: D2D_RECT_F,
     /// `IsEnabled`.
     pub enabled: bool,
+    /// `ToggleState` of a toggle button (Toggle pattern instead of Invoke); `None` for a plain button.
+    pub toggle: Option<bool>,
 }
 
 /// What the providers expose; the app keeps it current.
@@ -77,7 +79,7 @@ struct Root {
     model: Shared,
 }
 
-#[implement(IRawElementProviderSimple, IRawElementProviderFragment, IInvokeProvider)]
+#[implement(IRawElementProviderSimple, IRawElementProviderFragment, IInvokeProvider, IToggleProvider)]
 struct ItemProvider {
     model: Shared,
     index: usize,
@@ -194,8 +196,9 @@ impl IRawElementProviderSimple_Impl for ItemProvider_Impl {
     }
 
     fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> Result<IUnknown> {
-        self.info()?;
-        if id == UIA_InvokePatternId { Ok(self.to_object().to_interface()) } else { null() }
+        // ToggleButtonAutomationPeer exposes Toggle only; ButtonAutomationPeer, Invoke.
+        let pattern = if self.info()?.toggle.is_some() { UIA_TogglePatternId } else { UIA_InvokePatternId };
+        if id == pattern { Ok(self.to_object().to_interface()) } else { null() }
     }
 
     fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> Result<VARIANT> {
@@ -294,6 +297,21 @@ impl IInvokeProvider_Impl for ItemProvider_Impl {
     }
 }
 
+impl IToggleProvider_Impl for ItemProvider_Impl {
+    fn Toggle(&self) -> Result<()> {
+        if !self.info()?.enabled {
+            return Err(Error::from(NOT_ENABLED));
+        }
+        // Like Invoke: the app runs the click (which flips IsChecked) on the message,
+        // then raises the ToggleState property-changed event.
+        self.post(WM_UIA_INVOKE)
+    }
+
+    fn ToggleState(&self) -> Result<ToggleState> {
+        Ok(if self.info()?.toggle == Some(true) { ToggleState_On } else { ToggleState_Off })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,9 +331,9 @@ mod tests {
             hwnd,
             scale,
             items: vec![
-                Item { name: "Configurações".into(), rect: rect(10.0, 10.0, 110.0, 42.0), enabled: true },
-                Item { name: "Salvar".into(), rect: rect(120.0, 10.0, 180.0, 42.0), enabled: true },
-                Item { name: "Desabilitado".into(), rect: rect(190.0, 10.0, 290.0, 42.0), enabled: false },
+                Item { name: "Configurações".into(), rect: rect(10.0, 10.0, 110.0, 42.0), enabled: true, toggle: None },
+                Item { name: "Salvar".into(), rect: rect(120.0, 10.0, 180.0, 42.0), enabled: true, toggle: None },
+                Item { name: "Desabilitado".into(), rect: rect(190.0, 10.0, 290.0, 42.0), enabled: false, toggle: None },
             ],
             focused: Some(1),
         }))
@@ -492,6 +510,57 @@ mod tests {
         let gone = item(&m, 2);
         m.borrow_mut().items.truncate(1);
         assert_eq!(unsafe { gone.GetPropertyValue(UIA_NamePropertyId) }.map_err(|e| e.code()).err(), Some(NOT_AVAILABLE));
+    }
+
+    /// Appends toggle button 3 (`checked`, `enabled`).
+    fn with_toggle(m: &Shared, checked: bool, enabled: bool) -> usize {
+        let item = Item { name: "Wi-Fi".into(), rect: rect(300.0, 10.0, 360.0, 42.0), enabled, toggle: Some(checked) };
+        m.borrow_mut().items.push(item);
+        3
+    }
+
+    fn toggle_of(m: &Shared, i: usize) -> IToggleProvider {
+        unsafe { item(m, i).GetPatternProvider(UIA_TogglePatternId).unwrap() }.cast().unwrap()
+    }
+
+    #[test]
+    fn toggle_button_should_expose_toggle_and_not_invoke() {
+        let m = model(1.0);
+        let i = with_toggle(&m, false, true);
+        let invoke = unsafe { item(&m, i).GetPatternProvider(UIA_InvokePatternId) };
+        let toggle = unsafe { item(&m, i).GetPatternProvider(UIA_TogglePatternId) };
+        assert_eq!((invoke.is_err(), toggle.is_ok()), (true, true));
+    }
+
+    #[test]
+    fn plain_button_should_not_expose_toggle() {
+        let m = model(1.0);
+        assert!(unsafe { item(&m, 1).GetPatternProvider(UIA_TogglePatternId) }.is_err());
+    }
+
+    #[test]
+    fn toggle_state_should_follow_the_model() {
+        let m = model(1.0);
+        let i = with_toggle(&m, true, true);
+        let on = unsafe { toggle_of(&m, i).ToggleState().unwrap() };
+        m.borrow_mut().items[i].toggle = Some(false);
+        let off = unsafe { toggle_of(&m, i).ToggleState().unwrap() };
+        assert_eq!((on, off), (ToggleState_On, ToggleState_Off));
+    }
+
+    #[test]
+    fn toggle_should_post_the_index() {
+        let m = model(1.0);
+        let i = with_toggle(&m, false, true);
+        unsafe { toggle_of(&m, i).Toggle().unwrap() };
+        assert_eq!(take_posted(m.borrow().hwnd, WM_UIA_INVOKE).map(|(w, _)| w.0), Some(i));
+    }
+
+    #[test]
+    fn toggle_on_a_disabled_button_should_fail_with_not_enabled() {
+        let m = model(1.0);
+        let i = with_toggle(&m, false, false);
+        assert_eq!(unsafe { toggle_of(&m, i).Toggle() }.map_err(|e| e.code()), Err(NOT_ENABLED));
     }
 
     #[test]

@@ -94,6 +94,7 @@ impl App {
             name: b.label.clone(),
             rect: b.rect,
             enabled: b.visual() != fluent_win::button::Visual::Disabled,
+            toggle: b.is_checked(),
         }).collect();
     }
 
