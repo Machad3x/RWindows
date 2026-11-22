@@ -140,6 +140,8 @@ pub struct Button {
     focus: Option<FocusKind>,
     /// `ToggleButton.IsChecked`; `None` for a plain button.
     checked: Option<bool>,
+    /// `SubtleButtonStyle`.
+    subtle: bool,
     /// State the background is transitioning from (`BackgroundTransition`).
     bg_from: (Visual, Look),
     bg: Tween,
@@ -151,6 +153,7 @@ enum Look {
     Default,
     Accent,
     Checked,
+    Subtle,
 }
 
 /// `ButtonBase::IsValidPointerPosition` tolerance, in DIPs.
@@ -170,6 +173,7 @@ impl Button {
             key_down: false,
             focus: None,
             checked: None,
+            subtle: false,
             bg_from: (Visual::Rest, if accent { Look::Accent } else { Look::Default }),
             bg: Tween::idle(1.0),
         }
@@ -178,6 +182,11 @@ impl Button {
     /// WinUI `ToggleButton` (`DefaultToggleButtonStyle`), two-state.
     pub fn toggle(label: &str, rect: D2D_RECT_F, checked: bool) -> Self {
         Self { checked: Some(checked), ..Self::new(label, rect, false) }
+    }
+
+    /// WinUI `SubtleButtonStyle`: no fill or border at rest (taskbar, Start, title bar buttons).
+    pub fn subtle(label: &str, rect: D2D_RECT_F) -> Self {
+        Self { subtle: true, ..Self::new(label, rect, false) }
     }
 
     /// `IsChecked` of a toggle button; `None` for a plain button.
@@ -340,14 +349,15 @@ impl Button {
         match self.look() {
             Look::Accent => true,
             Look::Checked => self.visual() != Visual::Disabled,
-            Look::Default => false,
+            Look::Default | Look::Subtle => false,
         }
     }
 
     fn look(&self) -> Look {
-        match (self.checked, self.accent) {
-            (Some(true), _) => Look::Checked,
-            (_, true) => Look::Accent,
+        match (self.checked, self.accent, self.subtle) {
+            (Some(true), ..) => Look::Checked,
+            (_, true, _) => Look::Accent,
+            (.., true) => Look::Subtle,
             _ => Look::Default,
         }
     }
@@ -420,8 +430,11 @@ fn style_of(visual: Visual, look: Look, t: &Theme) -> Style {
     if let Some(c) = t.high_contrast {
         return high_contrast_style(visual, look, &c);
     }
+    if look == Look::Subtle {
+        return subtle_style(visual, t);
+    }
     // ToggleButton Checked* states use the accent brushes outside high contrast.
-    let accent = look != Look::Default;
+    let accent = matches!(look, Look::Accent | Look::Checked);
     let elevation = |edge, edge_color, rest| Border::Elevation { edge, edge_color, rest };
     let default_edge = if t.dark { Edge::Top } else { Edge::Bottom };
     match (accent, visual) {
@@ -442,6 +455,18 @@ fn style_of(visual: Visual, look: Look, t: &Theme) -> Style {
     }
 }
 
+/// `SubtleButton*` (Default and Light): the border repeats the fill, so the
+/// `InnerBorderEdge` fill plus its 1-DIP ring read as one surface.
+fn subtle_style(visual: Visual, t: &Theme) -> Style {
+    let solid = |fill| Style { background: fill, foreground: t.text_primary, border: Border::Solid(fill) };
+    match visual {
+        Visual::Rest => Style { background: theme::SUBTLE_TRANSPARENT, foreground: t.text_primary, border: Border::None },
+        Visual::PointerOver => solid(t.subtle_hover),
+        Visual::Pressed => Style { foreground: t.text_secondary, ..solid(t.subtle_pressed) },
+        Visual::Disabled => Style { background: theme::SUBTLE_TRANSPARENT, foreground: t.text_disabled, border: Border::None },
+    }
+}
+
 /// `HighContrast` dictionaries of `Button_themeresources.xaml` and
 /// `ToggleButton_themeresources.xaml` (`Checked*`; unchecked states equal the
 /// default button), with each `SystemControl*Brush` resolved through the
@@ -450,9 +475,10 @@ fn high_contrast_style(visual: Visual, look: Look, c: &SystemColors) -> Style {
     let style = |background, foreground, border| Style { background, foreground, border: Border::Solid(border) };
     match (look, visual) {
         (_, Visual::Disabled) => style(c.button_face, c.gray_text, c.gray_text),
-        (Look::Default, Visual::Rest) => style(c.button_face, c.button_text, c.button_text),
-        (Look::Default, Visual::PointerOver) => style(c.highlight_text, c.highlight, c.highlight),
-        (Look::Default | Look::Checked, Visual::Pressed) => style(c.highlight_text, c.highlight, c.highlight_text),
+        // SubtleButton's HighContrast entries equal the default button's.
+        (Look::Default | Look::Subtle, Visual::Rest) => style(c.button_face, c.button_text, c.button_text),
+        (Look::Default | Look::Subtle, Visual::PointerOver) => style(c.highlight_text, c.highlight, c.highlight),
+        (Look::Default | Look::Subtle | Look::Checked, Visual::Pressed) => style(c.highlight_text, c.highlight, c.highlight_text),
         (Look::Checked, Visual::Rest) => style(c.highlight, c.highlight_text, c.highlight_text),
         (Look::Checked, Visual::PointerOver) => style(c.button_text, c.button_face, c.button_text),
         (Look::Accent, Visual::Rest) => style(c.highlight, c.highlight_text, c.highlight),
@@ -833,6 +859,47 @@ mod tests {
     fn checked_should_use_the_accent_brushes_outside_high_contrast() {
         let accent = Button::new("Ok", rect(0.0, 0.0, 80.0, 32.0), true).style(&Theme::DARK);
         assert_eq!(toggle(true).style(&Theme::DARK), accent);
+    }
+
+    fn subtle() -> Button {
+        Button::subtle("Iniciar", rect(0.0, 0.0, 80.0, 32.0))
+    }
+
+    #[test]
+    fn subtle_rest_should_have_a_transparent_fill_and_no_border() {
+        let (s, t) = (subtle().style(&Theme::DARK), Theme::DARK);
+        assert_eq!((s.background, s.foreground, s.border), (theme::SUBTLE_TRANSPARENT, t.text_primary, Border::None));
+    }
+
+    #[test]
+    fn subtle_pointer_over_should_fill_and_border_with_subtle_secondary() {
+        let mut b = subtle();
+        b.handle(Input::PointerMove(INSIDE.0, INSIDE.1));
+        let (s, t) = (b.style(&Theme::LIGHT), Theme::LIGHT);
+        assert_eq!((s.background, s.foreground, s.border), (t.subtle_hover, t.text_primary, Border::Solid(t.subtle_hover)));
+    }
+
+    #[test]
+    fn subtle_pressed_should_use_subtle_tertiary_and_secondary_text() {
+        let mut b = subtle();
+        b.handle(Input::PointerDown(INSIDE.0, INSIDE.1));
+        let (s, t) = (b.style(&Theme::DARK), Theme::DARK);
+        assert_eq!((s.background, s.foreground, s.border), (t.subtle_pressed, t.text_secondary, Border::Solid(t.subtle_pressed)));
+    }
+
+    #[test]
+    fn subtle_disabled_should_be_transparent_with_disabled_text() {
+        let mut b = subtle();
+        b.set_enabled(false);
+        let (s, t) = (b.style(&Theme::DARK), Theme::DARK);
+        assert_eq!((s.background, s.foreground, s.border), (theme::SUBTLE_TRANSPARENT, t.text_disabled, Border::None));
+    }
+
+    #[test]
+    fn high_contrast_subtle_should_match_the_default_button() {
+        let mut b = subtle();
+        b.handle(Input::PointerMove(INSIDE.0, INSIDE.1));
+        assert_eq!(hc(&b), hc(&hovered(false)));
     }
 
     #[test]

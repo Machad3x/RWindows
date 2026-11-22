@@ -21,6 +21,9 @@ pub const CONTROL_RADIUS: f32 = 4.0;
 /// WinUI `OverlayCornerRadius` (cards, flyouts, dialogs, menus).
 pub const OVERLAY_RADIUS: f32 = 8.0;
 
+/// `SubtleFillColorTransparent` (same in dark and light).
+pub const SUBTLE_TRANSPARENT: D2D1_COLOR_F = argb(0x00FFFFFF);
+
 /// `0xAARRGGBB` to a Direct2D color (straight alpha).
 pub const fn argb(v: u32) -> D2D1_COLOR_F {
     D2D1_COLOR_F {

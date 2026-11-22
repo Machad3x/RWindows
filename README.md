@@ -88,6 +88,18 @@ Desenho (`Button::draw`):
 
 Exemplo: `cargo run --release --example buttons` (Tab/Shift+Tab, Espaço/Enter, mouse com captura). Medido: 47.9 MB de working set, 0 ms de CPU parado em 3 s.
 
+### SubtleButton
+
+`Button::subtle(label, rect)` é o `SubtleButtonStyle` (botões da barra de tarefas, Iniciar, barra de título): sem fundo nem borda em repouso.
+
+| Estado | Fundo = borda | Texto | Fonte |
+|---|---|---|---|
+| Rest / Disabled | `SubtleFillColorTransparent` (`#00FFFFFF`), sem borda | Primary / Disabled | `Button_themeresources.xaml` (`SubtleButton*`), `Common_themeresources_any.xaml` |
+| PointerOver | `SubtleFillColorSecondary` | Primary | idem |
+| Pressed | `SubtleFillColorTertiary` | Secondary | idem |
+
+A borda repete a cor do fundo; com `InnerBorderEdge` o anel de 1 DIP e o fundo recuado formam uma superfície só. Mesma transição de 83 ms, foco e padding do Button. No alto contraste os valores são os do Button padrão (dicionário `HighContrast`, mesmas chaves resolvidas).
+
 ### ToggleButton
 
 `Button::toggle(label, rect, checked)` é o `ToggleButton` de dois estados (os blocos de Configurações rápidas do Win11 são desse tipo). Usa a mesma entrada do `ButtonBase`; `is_checked()` devolve `None` num botão comum.
