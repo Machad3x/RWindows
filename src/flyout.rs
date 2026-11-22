@@ -57,17 +57,17 @@ impl Placement {
 /// monitor work area), trying `preferred` then its fallbacks. Returns the
 /// flyout rectangle and the placement used. Same coordinate space for all.
 pub fn place(target: D2D_RECT_F, width: f32, height: f32, container: D2D_RECT_F, preferred: Placement) -> (D2D_RECT_F, Placement) {
+    // shortcut: no ResizeToFit (fb.cpp L2635); a flyout larger than the container is just clamped to its size here.
+    let (width, height) = (width.min(container.right - container.left), height.min(container.bottom - container.top));
     // PerformPlacementWithFallback: the first placement that fits, else the first choice.
     let order = preferred.order();
     let first = try_placement(target, width, height, container, order[0]);
-    let (pos, used) = if first.0 {
-        (first.1, order[0])
-    } else {
-        order[1..].iter()
-            .map(|&p| (try_placement(target, width, height, container, p), p))
-            .find(|((fits, _), _)| *fits)
-            .map_or((first.1, order[0]), |((_, pos), p)| (pos, p))
-    };
+    let fallback = order[1..].iter()
+        .map(|&p| (try_placement(target, width, height, container, p), p))
+        .find(|((fits, _), _)| *fits)
+        .map(|((_, pos), p)| (pos, p));
+    let fits = first.0 || fallback.is_some();
+    let (pos, used) = if first.0 { (first.1, order[0]) } else { fallback.unwrap_or((first.1, order[0])) };
     // The margin goes only in the direction the flyout appears.
     let (dx, dy) = match used {
         Placement::Top => (0.0, -MARGIN),
@@ -75,7 +75,12 @@ pub fn place(target: D2D_RECT_F, width: f32, height: f32, container: D2D_RECT_F,
         Placement::Left => (-MARGIN, 0.0),
         Placement::Right => (MARGIN, 0.0),
     };
-    let (x, y) = (pos.0 + dx, pos.1 + dy);
+    let (mut x, mut y) = (pos.0 + dx, pos.1 + dy);
+    if !fits {
+        // Nothing fit: keep the (clamped) flyout inside the container despite the margin.
+        x = x.clamp(container.left, container.right - width);
+        y = y.clamp(container.top, container.bottom - height);
+    }
     (rect(x, y, x + width, y + height), used)
 }
 
@@ -113,8 +118,11 @@ fn center_within(start: f32, end: f32, size: f32, low: f32, high: f32) -> (bool,
 pub struct Transition {
     start: Instant,
     opening: bool,
-    /// Unit vector the open slide comes from (toward the target).
+    /// Unit vector of the open slide's starting offset (toward/over the target).
     from: (f32, f32),
+    /// Closing: opacity and offset the fade starts from.
+    start_opacity: f32,
+    at: (f32, f32),
 }
 
 /// One frame of a [`Transition`].
@@ -136,21 +144,27 @@ const SHOW_SLIDE: (Duration, CubicBezier) = (easing::REPOSITION_DURATION, easing
 const HIDE_FADE: Duration = Duration::from_millis(83);
 
 impl Transition {
-    /// Opening at `placement`: the flyout slides in from the side away from the target.
+    /// Opening at `placement`: the flyout starts 50 DIPs toward (over) the target and
+    /// slides away from it into place.
     pub fn open(placement: Placement) -> Self {
-        // PopupThemeTransition offset: away from the target, so the flyout moves toward it.
+        // PopupThemeTransition offsets (FlyoutBase): Top starts lower, Bottom higher, etc.
         let from = match placement {
             Placement::Top => (0.0, 1.0),
             Placement::Bottom => (0.0, -1.0),
             Placement::Left => (1.0, 0.0),
             Placement::Right => (-1.0, 0.0),
         };
-        Self { start: Instant::now(), opening: true, from }
+        Self { start: Instant::now(), opening: true, from, start_opacity: 0.0, at: (0.0, 0.0) }
     }
 
     /// Closing: a plain fade out.
     pub fn close() -> Self {
-        Self { start: Instant::now(), opening: false, from: (0.0, 0.0) }
+        Self::close_from(Frame { offset: (0.0, 0.0), opacity: 1.0, running: false })
+    }
+
+    /// Closing from `frame` (e.g. mid-open): stays at its offset, fades from its opacity.
+    pub fn close_from(frame: Frame) -> Self {
+        Self { start: Instant::now(), opening: false, from: (0.0, 0.0), start_opacity: frame.opacity, at: frame.offset }
     }
 
     /// The frame `elapsed` after the start.
@@ -158,7 +172,7 @@ impl Transition {
         let ratio = |t: Duration, d: Duration| (t.as_secs_f32() / d.as_secs_f32()).clamp(0.0, 1.0);
         if !self.opening {
             let k = ratio(elapsed, HIDE_FADE);
-            return Frame { offset: (0.0, 0.0), opacity: 1.0 - k, running: elapsed < HIDE_FADE };
+            return Frame { offset: self.at, opacity: self.start_opacity * (1.0 - k), running: elapsed < HIDE_FADE };
         }
         let (delay, fade) = SHOW_FADE;
         let opacity = ratio(elapsed.saturating_sub(delay), fade);
@@ -279,6 +293,21 @@ mod tests {
         let t = Transition::close();
         let (start, end) = (t.at(Duration::ZERO), t.at(Duration::from_millis(83)));
         assert_eq!((start.opacity, end.opacity, end.running), (1.0, 0.0, false));
+    }
+
+    #[test]
+    fn closing_mid_open_should_start_from_the_current_frame() {
+        let mid = Frame { offset: (0.0, 20.0), opacity: 0.4, running: true };
+        let t = Transition::close_from(mid);
+        let (start, half) = (t.at(Duration::ZERO), t.at(Duration::from_millis(41)));
+        assert_eq!((start.offset, start.opacity), ((0.0, 20.0), 0.4));
+        assert!(half.opacity < 0.4 && half.offset == (0.0, 20.0));
+    }
+
+    #[test]
+    fn a_flyout_bigger_than_the_container_should_shrink_to_fit() {
+        let (r, _) = place(target(450.0, 400.0), 300.0, 2000.0, SCREEN, Placement::Bottom);
+        assert!(r.top >= SCREEN.top && r.bottom <= SCREEN.bottom, "{r:?}");
     }
 
     #[test]

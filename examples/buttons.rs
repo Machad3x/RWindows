@@ -8,6 +8,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use fluent_win::backdrop;
 use fluent_win::button::{Button, FocusKind, Input, Key};
@@ -22,7 +23,7 @@ use fluent_win::uia::{self, WM_UIA_FOCUS, WM_UIA_INVOKE, WM_UIA_SET_VALUE};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, ValidateRect,
+    ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, ValidateRect,
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -35,7 +36,8 @@ use windows::Win32::UI::Accessibility::{
 };
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, GetDpiForSystem, MDT_EFFECTIVE_DPI,
+    SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
@@ -49,7 +51,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE,
     WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW, WS_VISIBLE, DestroyWindow, SW_SHOW,
-    SWP_NOSIZE, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SWP_NOSIZE, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_CLOSE, WM_NULL, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 use windows::core::{PCWSTR, Result, w};
 
@@ -189,19 +192,24 @@ impl App {
         if self.popup.is_some() {
             return Ok(());
         }
-        let k = self.surface.scale();
+        // The anchor in screen pixels (main window scale), then everything in the DIPs
+        // of the monitor under it: the popup is created there and draws at its DPI.
+        let km = self.surface.scale();
         let a = self.panel.controls[anchor].rect();
         let mut o = POINT::default();
-        let work = unsafe {
-            _ = ClientToScreen(self.hwnd, &mut o);
-            let monitor = MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST);
+        unsafe { _ = ClientToScreen(self.hwnd, &mut o) };
+        let px = |x: f32, origin: i32| origin + (x * km).round() as i32;
+        let anchor_px = RECT { left: px(a.left, o.x), top: px(a.top, o.y), right: px(a.right, o.x), bottom: px(a.bottom, o.y) };
+        let (work, k) = unsafe {
+            let monitor = MonitorFromRect(&anchor_px, MONITOR_DEFAULTTONEAREST);
             let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
             _ = GetMonitorInfoW(monitor, &mut info);
-            info.rcWork
+            let (mut dx, mut dy) = (96, 96);
+            _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+            (info.rcWork, dx as f32 / 96.0)
         };
-        let (ox, oy) = (o.x as f32 / k, o.y as f32 / k);
-        let target = rect(ox + a.left, oy + a.top, ox + a.right, oy + a.bottom);
-        let container = rect(work.left as f32 / k, work.top as f32 / k, work.right as f32 / k, work.bottom as f32 / k);
+        let dips = |r: RECT| rect(r.left as f32 / k, r.top as f32 / k, r.right as f32 / k, r.bottom as f32 / k);
+        let (target, container) = (dips(anchor_px), dips(work));
         // Content inside FlyoutContentPadding: a ToggleSwitch and a Slider.
         let (pl, pt, pr, pb) = flyout::PADDING;
         let switch = ToggleSwitch::layout(&self.surface, &self.formats.switch, "Luz noturna", "Ativado", "Desativado", pl, pt, false)?;
@@ -214,19 +222,30 @@ impl App {
         );
         let (r, placement) = flyout::place(target, w, h, container, flyout::Placement::Bottom);
         let origin = ((r.left * k).round() as i32, (r.top * k).round() as i32);
+        let transition = flyout::Transition::open(placement);
+        // Created at the first frame's position, so DWM never composes it at the final spot first.
+        let start = transition.at(Duration::ZERO).offset;
+        let (x0, y0) = (origin.0 + (start.0 * k).round() as i32, origin.1 + (start.1 * k).round() as i32);
         let hwnd = unsafe {
             CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST, w!("fluent-win-flyout"),
-                w!("Mais opções"), WS_POPUP, origin.0, origin.1, (w * k).round() as i32, (h * k).round() as i32,
+                w!("Mais opções"), WS_POPUP, x0, y0, (w * k).round() as i32, (h * k).round() as i32,
                 Some(self.hwnd), None, None, None)?
         };
         let backdrop = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, self.theme.dark).is_ok();
         let surface = Surface::new(hwnd)?;
         self.popup = Some(Popup {
             hwnd, surface, panel: Panel::new(vec![Box::new(switch), Box::new(slider)]), size: (w, h), origin,
-            transition: flyout::Transition::open(placement), closing: false, backdrop,
+            transition, closing: false, backdrop,
         });
+        // Keyboard focus moves into the flyout; the WM_KILLFOCUS that ShowWindow sends
+        // the main window arrives while APP is borrowed and is skipped, so blur here.
+        let out = self.panel.focus(None, FocusKind::Keyboard);
+        if out.redraw {
+            self.render()?;
+        }
+        self.frame_popup()?;
         unsafe { _ = ShowWindow(hwnd, SW_SHOW) };
-        self.frame_popup()
+        Ok(())
     }
 
     /// Positions and draws the flyout for the current transition frame; destroys
@@ -256,7 +275,11 @@ impl App {
     fn close_popup(&mut self) {
         if let Some(p) = self.popup.as_mut().filter(|p| !p.closing) {
             p.closing = true;
-            p.transition = flyout::Transition::close();
+            // From wherever the open animation is, without a jump.
+            p.transition = flyout::Transition::close_from(p.transition.now());
+            // A cross-process deactivation is a sent message handled inside a blocked
+            // GetMessageW, which does not return for it: post something to wake the loop.
+            unsafe { _ = PostMessageW(Some(p.hwnd), WM_NULL, WPARAM(0), LPARAM(0)) };
         }
     }
 
@@ -377,6 +400,12 @@ extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         WM_KEYDOWN => with_app(|a| a.popup_key(VIRTUAL_KEY(wp.0 as u16), true)),
         WM_KEYUP => with_app(|a| a.popup_key(VIRTUAL_KEY(wp.0 as u16), false)),
         WM_CAPTURECHANGED if lp.0 != hwnd.0 as isize => with_app(|a| a.popup_input(Input::CaptureLost)),
+        // Alt+F4, or a move to a monitor with another DPI: close through the fade, so
+        // App.popup and the window are dropped together.
+        WM_CLOSE | WM_DPICHANGED => with_app(|a| {
+            a.close_popup();
+            Ok(())
+        }),
         _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
     LRESULT(0)
@@ -524,7 +553,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             with_app(|a| {
                 a.theme = Theme::system();
                 backdrop::set_dark(a.hwnd, a.theme.dark)?;
-                a.render()
+                if let Some(p) = &a.popup {
+                    backdrop::set_dark(p.hwnd, a.theme.dark)?;
+                }
+                a.render()?;
+                a.frame_popup()
             });
         }
         WM_GETOBJECT if lp.0 as i32 == UiaRootObjectId => {
