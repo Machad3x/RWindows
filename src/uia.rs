@@ -44,8 +44,9 @@ pub struct Item {
     pub rect: D2D_RECT_F,
     /// `IsEnabled`.
     pub enabled: bool,
-    /// `ToggleState` of a toggle button (Toggle pattern instead of Invoke); `None` for a plain button.
-    pub toggle: Option<bool>,
+    /// `ToggleState` (On, Off, Indeterminate) of a toggle control (Toggle pattern
+    /// instead of Invoke); `None` for a plain button.
+    pub toggle: Option<ToggleState>,
     /// `ControlType`: `UIA_ButtonControlTypeId` (Button, ToggleButton, ToggleSwitch) or
     /// `UIA_CheckBoxControlTypeId` (`CheckBoxAutomationPeer`).
     pub control_type: UIA_CONTROLTYPE_ID,
@@ -311,7 +312,7 @@ impl IToggleProvider_Impl for ItemProvider_Impl {
     }
 
     fn ToggleState(&self) -> Result<ToggleState> {
-        Ok(if self.info()?.toggle == Some(true) { ToggleState_On } else { ToggleState_Off })
+        Ok(self.info()?.toggle.unwrap_or(ToggleState_Off))
     }
 }
 
@@ -525,7 +526,7 @@ mod tests {
 
     /// Appends toggle button 3 (`checked`, `enabled`).
     fn with_toggle(m: &Shared, checked: bool, enabled: bool) -> usize {
-        let item = Item { name: "Wi-Fi".into(), rect: rect(300.0, 10.0, 360.0, 42.0), enabled, toggle: Some(checked), control_type: UIA_ButtonControlTypeId };
+        let item = Item { name: "Wi-Fi".into(), rect: rect(300.0, 10.0, 360.0, 42.0), enabled, toggle: Some(if checked { ToggleState_On } else { ToggleState_Off }), control_type: UIA_ButtonControlTypeId };
         m.borrow_mut().items.push(item);
         3
     }
@@ -554,9 +555,11 @@ mod tests {
         let m = model(1.0);
         let i = with_toggle(&m, true, true);
         let on = unsafe { toggle_of(&m, i).ToggleState().unwrap() };
-        m.borrow_mut().items[i].toggle = Some(false);
+        m.borrow_mut().items[i].toggle = Some(ToggleState_Off);
         let off = unsafe { toggle_of(&m, i).ToggleState().unwrap() };
-        assert_eq!((on, off), (ToggleState_On, ToggleState_Off));
+        m.borrow_mut().items[i].toggle = Some(ToggleState_Indeterminate);
+        let mixed = unsafe { toggle_of(&m, i).ToggleState().unwrap() };
+        assert_eq!((on, off, mixed), (ToggleState_On, ToggleState_Off, ToggleState_Indeterminate));
     }
 
     #[test]

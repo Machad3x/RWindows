@@ -160,6 +160,7 @@ Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As 
 Exemplo: "Lembrar de mim" (começa marcado) ao lado do switch; o `enum Control` ganhou `Check` e um `Formats` com os quatro formatos de texto. Verificado:
 - Cliente UIA real: tipo "caixa de seleção", só `TogglePattern`, `Toggle()` dá On → Off → On → Off com os eventos `1->0`, `0->1`, `1->0`.
 - Teclado (mensagens postadas com o foco no CheckBox via UIA): `-` desmarca, `-` de novo não muda, `+` marca, Enter não faz nada, Espaço alterna.
+- Três estados ("Selecionar tudo", começa indeterminado): `Toggle()` dá Indeterminate → Off → On → Indeterminate com os eventos `2->0`, `0->1`, `1->2`, e o traço `E9AE` aparece no quadrado.
 - Tela: quadrado no acento com o check escuro (glifo da Segoe Fluent Icons) quando marcado; quadrado vazio com borda quando desmarcado. 51.5 MB com UIA ativo, código de saída 0.
 
 ## ToggleSwitch
@@ -205,6 +206,7 @@ Simplificações: durante o drag as cores ficam as do estado atual (no WinUI o e
 | Invoke/SetFocus desabilitado → `UIA_E_ELEMENTNOTENABLED`; controle removido → `UIA_E_ELEMENTNOTAVAILABLE` | A página de `Invoke` só diz "HRESULT"; o código vem da tabela de erros do UIA | [UIA error codes](https://learn.microsoft.com/windows/win32/winauto/uiauto-error-codes) |
 | Toggle button (`Item::toggle = Some`): tipo Button com só o padrão Toggle (sem Invoke); `ToggleState` On/Off do modelo; `Toggle()` desabilitado → `UIA_E_ELEMENTNOTENABLED` | É o que o `ToggleButtonAutomationPeer` faz: só `PatternInterface_Toggle`, e o `ButtonBaseAutomationPeer` não expõe Invoke | `ToggleButtonAutomationPeer_Partial.cpp`, `ButtonAutomationPeer_Partial.cpp`, [IToggleProvider](https://learn.microsoft.com/windows/win32/api/uiautomationcore/nn-uiautomationcore-itoggleprovider) |
 | `Toggle()` posta `WM_UIA_INVOKE`, como o Invoke | O provider não pode mexer no botão (o app é dono). Limite: logo depois do `Toggle()`, o `ToggleState` ainda é o antigo até o app tratar a mensagem; o evento de propriedade avisa a troca. No WinUI o `OnClick` é síncrono | Decisão própria |
+| `Item::toggle` é `Option<ToggleState>` (On, Off ou Indeterminate) e o evento de troca leva o valor antigo e o novo | CheckBox de três estados; o exemplo lê o valor antigo do modelo antes de sincronizar | [ToggleState](https://learn.microsoft.com/windows/win32/api/uiautomationcore/ne-uiautomationcore-togglestate) |
 | `Item::control_type` (Button ou CheckBox) | O `CheckBoxAutomationPeer` devolve `AutomationControlType_CheckBox`; Button, ToggleButton e ToggleSwitch devolvem Button | `CheckBoxAutomationPeer_Partial.cpp` |
 | Dependência direta `windows-core` 0.62.2 | O `#[implement]` gera caminhos `::windows_core`; já estava na árvore | `Cargo.lock` |
 

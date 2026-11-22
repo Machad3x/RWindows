@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use fluent_win::backdrop;
 use fluent_win::button::{Button, FocusKind, Input, Key, Response, Visual};
-use fluent_win::check_box::{self, CheckBox};
+use fluent_win::check_box::{self, CheckBox, CheckState};
 use fluent_win::toggle_switch::ToggleSwitch;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use fluent_win::gfx::{Surface, rect};
@@ -24,7 +24,8 @@ use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUn
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
-    IRawElementProviderSimple, ToggleState_Off, ToggleState_On, UIA_AutomationFocusChangedEventId, UIA_EVENT_ID,
+    IRawElementProviderSimple, ToggleState, ToggleState_Indeterminate, ToggleState_Off, ToggleState_On,
+    UIA_AutomationFocusChangedEventId, UIA_EVENT_ID,
     UIA_ButtonControlTypeId, UIA_CONTROLTYPE_ID, UIA_CheckBoxControlTypeId, UIA_Invoke_InvokedEventId, UIA_ToggleToggleStatePropertyId, UiaRaiseAutomationPropertyChangedEvent,
     UiaClientsAreListening, UiaRaiseAutomationEvent, UiaReturnRawElementProvider, UiaRootObjectId,
 };
@@ -151,12 +152,17 @@ impl Control {
         }
     }
 
-    /// `IsChecked` / `IsOn` (Toggle pattern); `None` for a push button.
-    fn checked(&self) -> Option<bool> {
+    /// `IsChecked` / `IsOn` as a UIA ToggleState; `None` for a push button.
+    fn checked(&self) -> Option<ToggleState> {
+        let on_off = |on| if on { ToggleState_On } else { ToggleState_Off };
         match self {
-            Control::Button(b) => b.is_checked(),
-            Control::Switch(s) => Some(s.is_on()),
-            Control::Check(c) => Some(c.is_checked()),
+            Control::Button(b) => b.is_checked().map(on_off),
+            Control::Switch(s) => Some(on_off(s.is_on())),
+            Control::Check(c) => Some(match c.state() {
+                CheckState::Checked => ToggleState_On,
+                CheckState::Unchecked => ToggleState_Off,
+                CheckState::Indeterminate => ToggleState_Indeterminate,
+            }),
         }
     }
 
@@ -174,8 +180,8 @@ impl Control {
 enum UiaEvent {
     /// `UiaRaiseAutomationEvent`.
     Event(UIA_EVENT_ID),
-    /// `ToggleState` property changed to On (`true`) or Off.
-    Toggled(bool),
+    /// `ToggleState` property changed from the first value to the second.
+    Toggled(ToggleState, ToggleState),
 }
 
 thread_local! {
@@ -232,12 +238,16 @@ impl App {
         let b = &self.buttons[i];
         let checked = b.checked();
         self.status = match checked {
-            Some(on) => format!("{}: {}", b.name(), if on { "ligado" } else { "desligado" }),
+            Some(s) if s == ToggleState_On => format!("{}: ligado", b.name()),
+            Some(s) if s == ToggleState_Indeterminate => format!("{}: indeterminado", b.name()),
+            Some(_) => format!("{}: desligado", b.name()),
             None => format!("Clicou: {}", b.name()),
         };
-        if let Some(on) = checked {
-            // ToggleButton/ToggleSwitch raise ToggleState changed, not Invoked (their peers have no Invoke).
-            self.raise(i, UiaEvent::Toggled(on));
+        if let Some(new) = checked {
+            // The model still holds the state UIA last saw (synced at render).
+            let old = self.uia.borrow().items.get(i).and_then(|item| item.toggle).unwrap_or(ToggleState_Off);
+            // Toggle controls raise ToggleState changed, not Invoked (their peers have no Invoke).
+            self.raise(i, UiaEvent::Toggled(old, new));
         } else {
             self.raise(i, UiaEvent::Event(UIA_Invoke_InvokedEventId));
         }
@@ -364,12 +374,10 @@ fn try_with_app(f: impl FnOnce(&mut App) -> Result<()>) -> bool {
             let provider = uia::item(&model, i);
             let raised = match event {
                 UiaEvent::Event(id) => unsafe { UiaRaiseAutomationEvent(&provider, id) },
-                UiaEvent::Toggled(on) => {
-                    let state = |on| VARIANT::from(if on { ToggleState_On.0 } else { ToggleState_Off.0 });
-                    unsafe {
-                        UiaRaiseAutomationPropertyChangedEvent(&provider, UIA_ToggleToggleStatePropertyId, &state(!on), &state(on))
-                    }
-                }
+                UiaEvent::Toggled(old, new) => unsafe {
+                    let (old, new) = (VARIANT::from(old.0), VARIANT::from(new.0));
+                    UiaRaiseAutomationPropertyChangedEvent(&provider, UIA_ToggleToggleStatePropertyId, &old, &new)
+                },
             };
             if let Err(e) = raised {
                 eprintln!("fluent-win buttons: UIA event: {e}");
@@ -594,6 +602,11 @@ fn main() -> Result<()> {
         let (x, cy) = (switch.rect.right + GAP * 3.0, switch.rect.bottom - 20.0);
         buttons.push(Control::Switch(Box::new(switch)));
         buttons.push(Control::Check(CheckBox::new(text, rect(x, cy - ch / 2.0, x + cw, cy + ch / 2.0), true)));
+        // And a three-state one, starting Indeterminate.
+        let (x, text) = (x + cw + GAP, "Selecionar tudo");
+        let (cw, ch) = CheckBox::desired_size(&surface, &body, text)?;
+        let r = rect(x, cy - ch / 2.0, x + cw, cy + ch / 2.0);
+        buttons.push(Control::Check(CheckBox::three_state(text, r, CheckState::Indeterminate)));
 
         let mut app = App {
             hwnd, surface, theme, buttons,
