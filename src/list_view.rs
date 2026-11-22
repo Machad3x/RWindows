@@ -4,9 +4,13 @@
 
 use std::ops::Range;
 
-use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
+use windows::core::Result;
 
-use crate::gfx::rect;
+use crate::button::{Input, Key};
+use crate::gfx::{Surface, rect};
+use crate::panel::Formats;
+use crate::theme::{self, Theme};
 
 /// `ListViewItemMinHeight`.
 pub const ITEM_HEIGHT: f32 = 40.0;
@@ -30,6 +34,9 @@ pub struct ListView {
     pub hot: Option<usize>,
     /// Selected item (single selection).
     pub selected: Option<usize>,
+    pressed: Option<usize>,
+    captured: bool,
+    focused: bool,
 }
 
 impl ListView {
@@ -43,6 +50,9 @@ impl ListView {
             overscan: 1,
             hot: None,
             selected: None,
+            pressed: None,
+            captured: false,
+            focused: false,
         }
     }
 
@@ -160,6 +170,142 @@ impl ListView {
             self.scroll_to(bottom - self.viewport);
         }
     }
+
+    /// Routes pointer, keyboard and focus input. `left/top/width` are the
+    /// viewport origin and width in client DIPs.
+    pub fn handle(&mut self, input: Input, left: f32, top: f32, width: f32) -> Outcome {
+        let mut out = Outcome::default();
+        match input {
+            Input::PointerMove(x, y) => {
+                let hit = self.hit(x, y, left, top, width);
+                let hot = if self.captured { if hit == self.pressed { self.pressed } else { None } } else { hit };
+                out.redraw = hot != self.hot;
+                self.hot = hot;
+            }
+            Input::PointerDown(x, y) => {
+                let was = (self.hot, self.pressed);
+                self.hot = self.hit(x, y, left, top, width);
+                self.pressed = self.hot;
+                out.redraw = (self.hot, self.pressed) != was;
+                if let Some(i) = self.hot {
+                    self.select(i);
+                    self.captured = true;
+                    out.capture = Some(true);
+                    out.redraw = true;
+                }
+            }
+            Input::PointerUp(x, y) => {
+                if self.captured {
+                    let hit = self.hit(x, y, left, top, width);
+                    out.capture = Some(false);
+                    out.clicked = self.pressed.is_some() && self.pressed == hit;
+                    self.captured = false;
+                    self.pressed = None;
+                    out.redraw = true;
+                }
+            }
+            Input::PointerLeave | Input::CaptureLost | Input::Blur => {
+                out.redraw = self.hot.is_some() || self.pressed.is_some();
+                self.hot = None;
+                self.pressed = None;
+                if self.captured {
+                    self.captured = false;
+                    out.capture = Some(false);
+                }
+                if matches!(input, Input::Blur) {
+                    self.focused = false;
+                }
+            }
+            Input::Focus(_) => {
+                out.redraw = !self.focused;
+                self.focused = true;
+            }
+            Input::KeyDown(key) => {
+                let before = (self.offset, self.selected);
+                match key {
+                    Key::Down => self.move_selection(1),
+                    Key::Up => self.move_selection(-1),
+                    Key::Home => self.select(0),
+                    Key::End => self.select(self.items.len().saturating_sub(1)),
+                    _ => {}
+                }
+                out.redraw = (self.offset, self.selected) != before;
+            }
+            Input::KeyUp(Key::Space | Key::Enter) => {
+                out.clicked = self.selected.is_some();
+                out.redraw = self.pressed.take().is_some();
+            }
+            Input::KeyUp(_) => {}
+        }
+        out
+    }
+
+    /// Draws the virtualized rows with the `DefaultListViewItemStyle` brushes.
+    pub fn draw(&self, s: &Surface, t: &Theme, f: &Formats, left: f32, top: f32, width: f32) -> Result<()> {
+        let bottom = top + self.viewport;
+        s.with_clip(rect(left, top, left + width, bottom), |s| {
+        for (i, r) in self.arrange(left, top, width) {
+            // Overscan rows exist for hit testing and keyboard handoff, but the
+            // ScrollViewer clips them: never paint outside the viewport.
+            if r.bottom <= top || r.top >= bottom {
+                continue;
+            }
+            let r = rect(r.left, r.top.max(top), r.right, r.bottom.min(bottom));
+            let selected = self.selected == Some(i);
+            let color = style(t, selected, self.hot == Some(i), self.pressed == Some(i));
+            if let Some(bg) = color.background {
+                s.fill_round(r, RADIUS, bg);
+            }
+            if selected {
+                // `SelectionIndicatorBrush` (AccentFillColorDefault), 4 DIPs wide.
+                let bar = rect(r.left, r.top, r.left + 4.0, r.bottom);
+                s.fill_round(bar, theme::CONTROL_RADIUS / 2.0, t.accent);
+            }
+            if self.focused && selected {
+                s.stroke_round(r, RADIUS, 2.0, t.focus_outer);
+            }
+            s.text(&self.items[i], &f.switch,
+                rect(r.left + PADDING.0, r.top, r.right - PADDING.2, r.bottom), color.text);
+        }
+        });
+        Ok(())
+    }
+}
+
+/// What the app must do after [`ListView::handle`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Outcome {
+    /// Repaint.
+    pub redraw: bool,
+    /// `Some(true)`: `SetCapture`; `Some(false)`: `ReleaseCapture`.
+    pub capture: Option<bool>,
+    /// Item activated by a click or Space/Enter.
+    pub clicked: bool,
+}
+
+/// `ListViewItem*` brushes for one state (`ListViewItem_themeresources.xaml`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Style {
+    background: Option<D2D1_COLOR_F>,
+    text: D2D1_COLOR_F,
+}
+
+fn style(t: &Theme, selected: bool, hot: bool, pressed: bool) -> Style {
+    if let Some(c) = t.high_contrast {
+        let active = selected || hot || pressed;
+        return Style {
+            background: active.then_some(c.highlight),
+            text: if active { c.highlight_text } else { c.button_text },
+        };
+    }
+    let background = if pressed && (selected || hot) {
+        Some(t.subtle_pressed) // SelectedPressed / SelectedPointerOver when pressed
+    } else if selected || hot || pressed {
+        Some(t.subtle_hover) // Selected / PointerOver / Pressed
+    } else {
+        None
+    };
+    Style { background, text: t.text_primary }
 }
 
 #[cfg(test)]
@@ -170,6 +316,50 @@ mod tests {
         let mut l = ListView::new((0..n).map(|i| format!("Item {i}")).collect());
         l.set_viewport(100.0);
         l
+    }
+
+    #[test]
+    fn pointer_down_should_select_capture_and_click_on_release() {
+        let mut l = list(10);
+        let out = l.handle(Input::PointerDown(50.0, 10.0), 0.0, 0.0, 200.0);
+        assert_eq!((out.capture, out.redraw, l.selected), (Some(true), true, Some(0)));
+        let out = l.handle(Input::PointerUp(50.0, 10.0), 0.0, 0.0, 200.0);
+        assert_eq!((out.capture, out.clicked), (Some(false), true));
+    }
+
+    #[test]
+    fn dragging_out_should_cancel_the_click() {
+        let mut l = list(10);
+        l.handle(Input::PointerDown(50.0, 10.0), 0.0, 0.0, 200.0);
+        let out = l.handle(Input::PointerUp(50.0, 90.0), 0.0, 0.0, 200.0);
+        assert!(!out.clicked);
+    }
+
+    #[test]
+    fn arrows_should_move_the_selection_and_scroll_it_into_view() {
+        let mut l = list(100);
+        l.handle(Input::Focus(crate::button::FocusKind::Keyboard), 0.0, 0.0, 200.0);
+        for _ in 0..10 {
+            l.handle(Input::KeyDown(Key::Down), 0.0, 0.0, 200.0);
+        }
+        assert_eq!(l.selected, Some(9));
+        assert_eq!(l.offset(), 300.0);
+        l.handle(Input::KeyDown(Key::End), 0.0, 0.0, 200.0);
+        assert_eq!(l.selected, Some(99));
+        assert_eq!(l.offset(), 3900.0);
+        l.handle(Input::KeyDown(Key::Home), 0.0, 0.0, 200.0);
+        assert_eq!(l.selected, Some(0));
+        assert_eq!(l.offset(), 0.0);
+    }
+
+    #[test]
+    fn item_brushes_should_follow_the_winui_states() {
+        let t = Theme::DARK;
+        assert_eq!(style(&t, false, false, false).background, None);
+        assert_eq!(style(&t, true, false, false).background, Some(t.subtle_hover));
+        assert_eq!(style(&t, false, true, false).background, Some(t.subtle_hover));
+        assert_eq!(style(&t, true, true, true).background, Some(t.subtle_pressed));
+        assert!(style(&t, false, false, false).text.a > 0.0);
     }
 
     #[test]

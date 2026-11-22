@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
+    D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
     D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_CLAMP,
     D2D1_GAMMA_2_2, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
@@ -323,6 +323,16 @@ impl Surface {
             self.stroke_with(r, radius, 1.0, &brush.cast()?);
         }
         Ok(())
+    }
+
+    /// Clips everything `f` draws to `clip` (D2D's `PushAxisAlignedClip`), e.g.
+    /// a `ScrollViewer` viewport. Coordinates are DIPs in this surface's space.
+    pub fn with_clip(&self, clip: D2D_RECT_F, f: impl FnOnce(&Self)) {
+        unsafe {
+            self.ctx.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_ALIASED);
+        }
+        f(self);
+        unsafe { self.ctx.PopAxisAlignedClip() };
     }
 
     /// Draws whatever `f` draws at `opacity` (a D2D layer), e.g. a fading flyout.

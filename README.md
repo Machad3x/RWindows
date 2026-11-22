@@ -311,7 +311,9 @@ Exemplo: "Configurações", "Salvar", "Wi-Fi", "Mais opções" e "Menu" têm dic
 | Resto transparente; PointerOver e Selected usam `SubtleFillColorSecondary`, Pressed e Selected+PointerOver `SubtleFillColorTertiary`; texto sempre `TextFillColorPrimary` | idem (será aplicado no corte de desenho) |
 | Seleção simples: setas/Home/End movem e `ensure_visible` rola o mínimo necessário; o scroll é limitado a `[0, total − viewport]` | Decisão deste crate sobre `ListView.SelectionMode=Single` e `ScrollViewer`, ainda sem `ScrollViewer` próprio |
 
-Este corte é só o núcleo (dados, geometria, hit test, seleção e testes em `src/list_view.rs`). Falta o presenter desenhado, rodinha/teclado de rolagem, `GridView` e UIA.
+O presenter está implementado em `ListView::draw` com os pincéis acima (incluindo o indicador de seleção de 4 DIPs em `AccentFillColorDefault`), e `ListView::handle` cobre ponteiro, foco e setas/Home/End. O exemplo `examples/list.rs` mostra 500 itens, seleção por clique/teclado e rolagem de 3 linhas por notch da roda; `Surface::with_clip` recorta o desenho ao viewport, como um `ScrollViewer`. Verificado visualmente no Windows real: linhas de 40 DIPs, hover/seleção discretos e nenhum vazamento para a área de status.
+
+Falta: barra de rolagem desenhada, PageUp/PageDown, seleção múltipla, arrastar, agrupamento/cabeçalhos, `GridView`, transições de seleção e UIA (SelectionItem/Selection pattern).
 
 ## Panel (roteamento comum)
 
