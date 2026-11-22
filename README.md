@@ -142,6 +142,25 @@ Pendente: `AnimatedIcon`.
 
 Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As regras de press e release vêm do padrão confirmado em `OnPointerMoved` e `KeyUp`.
 
+## ToggleSwitch
+
+`toggle_switch::ToggleSwitch::new(header, on_content, off_content, rect, on)` reproduz o `ToggleSwitch` do WinUI (`DefaultToggleSwitchStyle`). Usa o mesmo `Input`/`Response`/`Visual` do Button; `Response::clicked` = `IsOn` mudou (`Toggled`). `desired_size` mede header + conteúdo.
+
+| Regra | Fonte |
+|---|---|
+| Geometria: header (se houver) + 4, depois linha de 40 (10 + trilho 40×20 raio 10 + 10); conteúdo 12 DIPs à direita do trilho; largura mínima 154 | `ToggleSwitch_themeresources.xaml` (`OuterBorder`, `ToggleSwitchPre/PostContentMargin` = 10, `ToggleSwitchThemeMinWidth`) |
+| Knob 12 (Rest/Disabled), 14 (PointerOver), 17×14 (Pressed, ancorado à esquerda desligado e à direita ligado, a 3 DIPs), raio 7; tamanho anima 83 ms `0,0,0,1` (250 ms ao desabilitar) | idem (estados `Normal`/`PointerOver`/`Pressed`/`Disabled`) |
+| Ligado: knob desloca 20 DIPs (`KnobTranslateTransform`) | idem (estado `On`) |
+| Clique (tap) alterna. O press já inicia o drag do `Thumb` (visual Pressed); arrastar ≥ 4 DIPs move o knob junto e, ao soltar, alterna se passou da metade | `ToggleSwitch_Partial.cpp` (`DragStarted/Delta/Completed`, `MoveCompleted`, `TapHandler`). Limiar de 4 DIPs = `SM_CXDRAG` padrão (simplificação) |
+| Teclado: só Espaço, alternando no KeyUp se o KeyDown foi tratado. Enter não faz nada. O ramo de setas/Home/End do `ToggleSwitchKeyProcess.h` nunca roda porque `HandlesKey` só aceita Space/GamepadA | `ToggleSwitchKeyProcess.h`, `ToggleSwitch::HandlesKey` |
+| Alternar desliza o knob em 367 ms com `cubic-bezier(0.1, 0.9, 0.2, 1)`; Off→On esmaece o visual ligado em 83 ms, On→Off troca na hora; soltar um drag põe o knob no fim na hora e esmaece em 83 ms | `RepositionThemeAnimation` no `OnToOff`/`OffToOnTransition`; tempo e curva lidos do uxtheme deste Windows: classe `ANIMATIONS`, `TAS_REPOSITION` (= 3, `vsanimation.h`) → 367 ms, função de tempo 4 da classe `timingfunction` → (0.1, 0.9, 0.2, 1.0) |
+| Cores do trilho desligado animam 83 ms para PointerOver/Pressed/Disabled e trocam na hora para Normal; o resto é discreto | `ColorAnimationUsingKeyFrames` vs `DiscreteObjectKeyFrame` no template |
+| Pincéis: desligado `ControlAltFillColor` Secondary/Tertiary/Quarternary/Disabled + `ControlStrongStrokeColor`; ligado acento ×1/0.9/0.8/disabled, knob `TextOnAccentFillColorPrimary`; knob desligado `TextFillColorSecondary`; texto Primary/Disabled | idem + `Common_themeresources_any.xaml` (tokens novos no `Theme`) |
+| Alto contraste: tabela própria (`SystemColor*`) e trilho ligado com borda de 1 DIP (`ToggleSwitchOnStrokeThickness` = 1 só nesse dicionário) | dicionário `HighContrast` |
+| Foco: alvo `SwitchAreaGrid` (linha recuada 5 DIPs), anel a `-7,-3,-7,-3` | `IsTemplateFocusTarget`, `FocusVisualMargin` |
+
+Simplificações: durante o drag as cores ficam as do estado atual (no WinUI o estado `Dragging` também mantém o visual do lado de partida); sem `HeaderPlacement=Left`; o raio do anel de foco usa o mesmo ajuste do Button (+3).
+
 ## UI Automation
 
 `uia` expõe controles desenhados à mão para leitores de tela (Narrador, NVDA) e ferramentas de teste. A janela devolve uma raiz de fragmento no `WM_GETOBJECT` (`UiaRootObjectId`), e cada controle é um fragmento filho do tipo Button com o padrão Invoke.

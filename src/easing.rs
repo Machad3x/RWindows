@@ -18,6 +18,11 @@ pub const FAST_OUT_SLOW_IN: CubicBezier = CubicBezier::new(0.0, 0.0, 0.0, 1.0);
 
 /// WinUI `ControlFasterAnimationDuration` (brush transitions, hover).
 pub const FASTER: Duration = Duration::from_millis(83);
+/// `RepositionThemeAnimation` curve: uxtheme `timingfunction` id 4, which the
+/// `ANIMATIONS` class assigns to `TAS_REPOSITION` (read from this Windows build).
+pub const REPOSITION: CubicBezier = CubicBezier::new(0.1, 0.9, 0.2, 1.0);
+/// `RepositionThemeAnimation` duration (uxtheme `TAS_REPOSITION`, `TA_REPOSITION_TARGET`).
+pub const REPOSITION_DURATION: Duration = Duration::from_millis(367);
 /// WinUI `ControlFastAnimationDuration`.
 pub const FAST: Duration = Duration::from_millis(167);
 /// WinUI `ControlNormalAnimationDuration`.
@@ -91,6 +96,11 @@ impl Tween {
             return;
         }
         *self = Self { from: self.value(), to, start: Instant::now(), duration, curve };
+    }
+
+    /// Value the tween is heading to (or resting at).
+    pub fn target(&self) -> f32 {
+        self.to
     }
 
     /// Current value.

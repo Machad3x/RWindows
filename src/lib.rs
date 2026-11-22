@@ -14,4 +14,5 @@ pub mod button;
 pub mod easing;
 pub mod gfx;
 pub mod theme;
+pub mod toggle_switch;
 pub mod uia;

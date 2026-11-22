@@ -89,6 +89,18 @@ pub struct Theme {
     pub focus_outer: D2D1_COLOR_F,
     /// `FocusStrokeColorInner` (1-DIP inner focus ring).
     pub focus_inner: D2D1_COLOR_F,
+    /// `ControlAltFillColorSecondary` (ToggleSwitch track, off).
+    pub control_alt_fill_secondary: D2D1_COLOR_F,
+    /// `ControlAltFillColorTertiary` (track off, pointer over).
+    pub control_alt_fill_tertiary: D2D1_COLOR_F,
+    /// `ControlAltFillColorQuarternary` (track off, pressed).
+    pub control_alt_fill_quarternary: D2D1_COLOR_F,
+    /// `ControlAltFillColorDisabled`.
+    pub control_alt_fill_disabled: D2D1_COLOR_F,
+    /// `ControlStrongStrokeColorDefault` (track outline, off).
+    pub control_strong_stroke: D2D1_COLOR_F,
+    /// `ControlStrongStrokeColorDisabled`.
+    pub control_strong_stroke_disabled: D2D1_COLOR_F,
     /// The user's high contrast colors, when high contrast is on. Controls then
     /// use their `HighContrast` theme dictionary instead of the tokens above.
     pub high_contrast: Option<SystemColors>,
@@ -140,6 +152,12 @@ impl Theme {
         text_on_accent_disabled: argb(0x87FFFFFF),
         focus_outer: argb(0xFFFFFFFF),
         focus_inner: argb(0xB3000000),
+        control_alt_fill_secondary: argb(0x19000000),
+        control_alt_fill_tertiary: argb(0x0BFFFFFF),
+        control_alt_fill_quarternary: argb(0x12FFFFFF),
+        control_alt_fill_disabled: argb(0x00FFFFFF),
+        control_strong_stroke: argb(0x8BFFFFFF),
+        control_strong_stroke_disabled: argb(0x28FFFFFF),
         high_contrast: None,
     };
 
@@ -168,6 +186,12 @@ impl Theme {
         text_on_accent_disabled: argb(0xFFFFFFFF),
         focus_outer: argb(0xE4000000),
         focus_inner: argb(0xB3FFFFFF),
+        control_alt_fill_secondary: argb(0x06000000),
+        control_alt_fill_tertiary: argb(0x0F000000),
+        control_alt_fill_quarternary: argb(0x18000000),
+        control_alt_fill_disabled: argb(0x00FFFFFF),
+        control_strong_stroke: argb(0x72000000),
+        control_strong_stroke_disabled: argb(0x37000000),
         high_contrast: None,
     };
 
@@ -197,6 +221,12 @@ impl Theme {
             text_on_accent_disabled: c.gray_text,
             focus_outer: c.window_text,
             focus_inner: c.window,
+            control_alt_fill_secondary: c.button_face,
+            control_alt_fill_tertiary: c.button_face,
+            control_alt_fill_quarternary: c.button_face,
+            control_alt_fill_disabled: c.button_face,
+            control_strong_stroke: c.button_text,
+            control_strong_stroke_disabled: c.button_text,
             high_contrast: Some(c),
         }
     }
