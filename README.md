@@ -46,6 +46,9 @@ Cada decisão registra o motivo e a fonte. "Não verificado" quer dizer que vem 
 | Fallback para WARP | Funciona em VM sem GPU e com driver quebrado | Revisão Opus |
 | Retângulos alinhados ao pixel físico | Imita o layout rounding do WinUI e evita bordas borradas em 125%/150% | Revisão Opus |
 | Tokens de cor com os nomes das chaves do WinUI | Rastreabilidade: cada valor tem nome oficial | [`Common_themeresources_any.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/Common_themeresources_any.xaml) |
+| `stroke_elevation`: borda de 1 DIP com gradiente linear absoluto nos 3 DIPs da borda (paradas 0.33/1.0), `Edge::Top` no escuro e `Edge::Bottom` no claro e em todo accent | Reproduz `ControlElevationBorderBrush`/`AccentControlElevationBorderBrush` (`MappingMode=Absolute`, `EndPoint 0,3`, `ScaleY=-1` quando invertido) | WinUI `Common_themeresources_any.xaml` |
+| `stroke_round` com largura e raio externo, igual a um `Border` XAML; `measure` mede texto numa linha | O foco usa bordas de 2 e 1 DIP; o Button dimensiona pelo texto | `FocusRectManager.cpp` (WinUI) |
+| Dependência direta `windows-numerics` 0.3.1 | `Vector2` dos pontos do gradiente; já vinha como dependência do `windows`, sem crate novo na árvore | `Cargo.lock` |
 | Tokens de estado (disabled, on-accent, stroke secundário, foco) | Necessários para Button e outros controles. `AccentFillColorSecondary/Tertiary` = acento com `Opacity` 0.9/0.8 (`with_opacity`) | WinUI `Common_themeresources_any.xaml` (dicionários Default e Light) |
 | Durações 83/167/250 ms, curva `0,0,0,1` | `ControlFaster/Fast/NormalAnimationDuration`, `ControlFastOutSlowInKeySpline` | WinUI `Common_themeresources_any.xaml` |
 | Idle bloqueado em `GetMessageW` e frames só com animação ativa | 0% de CPU parado | Medido |

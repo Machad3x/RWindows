@@ -6,13 +6,14 @@
 
 use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, E_POINTER, HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_CLAMP,
+    D2D1_GAMMA_2_2, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
-    D2D1CreateFactory, ID2D1DeviceContext, ID2D1Factory1, ID2D1SolidColorBrush,
+    D2D1CreateFactory, ID2D1Brush, ID2D1DeviceContext, ID2D1RenderTarget, ID2D1Factory1, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP,
@@ -27,7 +28,7 @@ use windows::Win32::Graphics::DirectComposition::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_AUTOMATIC_FONT_AXES_OPTICAL_SIZE, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_AXIS_TAG_WEIGHT,
     DWRITE_FONT_AXIS_VALUE,
-    DWRITE_MEASURING_MODE_NATURAL, DWriteCreateFactory, IDWriteFactory6, IDWriteTextFormat,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_TEXT_METRICS, DWriteCreateFactory, IDWriteFactory6, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
@@ -43,6 +44,7 @@ use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{Error, Interface, Result, w};
+use windows_numerics::Vector2;
 
 use crate::theme::{self, Ramp};
 
@@ -233,19 +235,58 @@ impl Surface {
         }
     }
 
-    /// Draws a 1-DIP border inside `rect` (edges snapped to device pixels).
-    pub fn stroke_round(&self, rect: D2D_RECT_F, radius: f32, color: D2D1_COLOR_F) {
-        let rect = self.snap(rect);
-        let inner = D2D_RECT_F {
-            left: rect.left + 0.5,
-            top: rect.top + 0.5,
-            right: rect.right - 0.5,
-            bottom: rect.bottom - 0.5,
-        };
+    /// Draws a `width`-DIP border inside `rect`, like a XAML `Border`
+    /// (`radius` is the outer corner radius; edges snapped to device pixels).
+    pub fn stroke_round(&self, rect: D2D_RECT_F, radius: f32, width: f32, color: D2D1_COLOR_F) {
+        unsafe { self.brush.SetColor(&color) };
+        self.stroke_with(rect, radius, width, &self.brush);
+    }
+
+    fn stroke_with(&self, rect: D2D_RECT_F, radius: f32, width: f32, brush: &ID2D1Brush) {
+        let r = self.snap(rect);
+        let h = width / 2.0;
+        let center = D2D_RECT_F { left: r.left + h, top: r.top + h, right: r.right - h, bottom: r.bottom - h };
+        unsafe { self.ctx.DrawRoundedRectangle(&rounded(center, (radius - h).max(0.0)), brush, width, None) };
+    }
+
+    /// Size of `text` laid out on one line, in DIPs (width, line height).
+    pub fn measure(&self, text: &str, format: &IDWriteTextFormat) -> Result<(f32, f32)> {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let mut m = DWRITE_TEXT_METRICS::default();
         unsafe {
-            self.brush.SetColor(&color);
-            self.ctx.DrawRoundedRectangle(&rounded(inner, radius - 0.5), &self.brush, 1.0, None);
+            let layout = self.dwrite.CreateTextLayout(&wide, format, f32::MAX, f32::MAX)?;
+            layout.GetMetrics(&mut m)?;
         }
+        Ok((m.widthIncludingTrailingWhitespace, m.height))
+    }
+
+    /// 1-DIP border with WinUI's `ControlElevationBorderBrush` shape: a linear
+    /// gradient over the 3 DIPs next to `edge` (stops 0.33 = `edge_color`,
+    /// 1.0 = `rest_color`), solid `rest_color` elsewhere.
+    // shortcut: gradient brush built per call (two small device objects); cache per theme if profiling shows it.
+    pub fn stroke_elevation(&self, rect: D2D_RECT_F, radius: f32, edge: Edge,
+        edge_color: D2D1_COLOR_F, rest_color: D2D1_COLOR_F) -> Result<()> {
+        let r = self.snap(rect);
+        // XAML: MappingMode=Absolute, StartPoint 0,0, EndPoint 0,3 (flipped for Edge::Bottom).
+        let (start, end) = match edge {
+            Edge::Top => (r.top, r.top + 3.0),
+            Edge::Bottom => (r.bottom, r.bottom - 3.0),
+        };
+        let stops = [
+            D2D1_GRADIENT_STOP { position: 0.33, color: edge_color },
+            D2D1_GRADIENT_STOP { position: 1.0, color: rest_color },
+        ];
+        unsafe {
+            // ID2D1RenderTarget overload (gamma + extend); DeviceContext shadows it with a 6-arg one.
+            let stops = ID2D1RenderTarget::CreateGradientStopCollection(&self.ctx, &stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)?;
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                startPoint: Vector2::new(r.left, start),
+                endPoint: Vector2::new(r.left, end),
+            };
+            let brush = self.ctx.CreateLinearGradientBrush(&props, None, &stops)?;
+            self.stroke_with(r, radius, 1.0, &brush.cast()?);
+        }
+        Ok(())
     }
 
     /// Draws `text` laid out inside `rect`.
@@ -258,6 +299,16 @@ impl Surface {
                 D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, DWRITE_MEASURING_MODE_NATURAL);
         }
     }
+}
+
+/// Which edge of a control carries the lit/shaded line of an elevation border.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    /// Top edge (dark-theme `ControlElevationBorderBrush`).
+    Top,
+    /// Bottom edge (light theme, and every `AccentControlElevationBorderBrush`:
+    /// the XAML brush is flipped with `ScaleY=-1`).
+    Bottom,
 }
 
 /// `D2D_RECT_F` from edges.
@@ -306,6 +357,7 @@ fn client_px(hwnd: HWND) -> Result<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
     use windows::Win32::Graphics::DirectWrite::{DWRITE_FONT_FAMILY_MODEL_TYPOGRAPHIC, DWRITE_LINE_METRICS};
 
     /// Natural line height and baseline of one ramp step, as DirectWrite lays it out.
@@ -329,6 +381,26 @@ mod tests {
             CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, w!("STATIC"), w!(""), WS_POPUP,
                 0, 0, 64, 64, None, None, None, None).unwrap()
         }
+    }
+
+    #[test]
+    fn measure_should_grow_with_text_and_use_the_natural_line_height() {
+        let surface = Surface::new(hidden_window()).unwrap();
+        let body = surface.format(&theme::BODY).unwrap();
+        let (short, h) = surface.measure("Ok", &body).unwrap();
+        let (long, _) = surface.measure("Configurações", &body).unwrap();
+        assert!(short > 0.0 && long > short && (h - 18.62).abs() < 0.05, "{short} {long} {h}");
+    }
+
+    #[test]
+    fn strokes_should_draw_on_a_real_surface() {
+        let mut surface = Surface::new(hidden_window()).unwrap();
+        let r = rect(4.0, 4.0, 60.0, 36.0);
+        surface.begin();
+        surface.stroke_round(r, theme::CONTROL_RADIUS, 2.0, Theme::DARK.focus_outer);
+        let drawn = surface.stroke_elevation(r, theme::CONTROL_RADIUS, Edge::Bottom,
+            Theme::DARK.stroke_secondary, Theme::DARK.stroke);
+        assert_eq!((drawn, surface.end()), (Ok(()), Ok(())));
     }
 
     #[test]
