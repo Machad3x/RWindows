@@ -21,6 +21,7 @@ use crate::toggle_switch::ToggleSwitch;
 use crate::uia;
 
 /// Text formats the built-in controls draw with.
+#[derive(Clone)]
 pub struct Formats {
     /// Centered Body ([`Button`]).
     pub label: IDWriteTextFormat,

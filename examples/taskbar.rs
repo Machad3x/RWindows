@@ -3,21 +3,26 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use fluent_win::app_bar::{self, AppBar};
+use fluent_win::button::{Input, Key};
 use fluent_win::backdrop;
 use fluent_win::flyout;
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::icons;
+use fluent_win::menu_flyout::{Entry, Item, MenuFlyout};
 use fluent_win::panel::Formats;
 use fluent_win::theme::Theme;
+use fluent_win::uia::{self, WM_UIA_INVOKE};
 use fluent_win::window_list::{self, ShellHook, WindowInfo};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint, ValidateRect,
+    ClientToScreen, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
+    MonitorFromPoint, MonitorFromRect, ValidateRect,
 };
 use windows::Win32::Globalization::{
     DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx, TIME_NOSECONDS,
@@ -28,18 +33,28 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::SystemInformation::GetSystemTime;
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, GetDpiForSystem, MDT_EFFECTIVE_DPI,
+    SetProcessDpiAwarenessContext,
+};
+use windows::Win32::UI::Accessibility::{
+    UIA_MenuItemControlTypeId, UiaReturnRawElementProvider, UiaRootObjectId,
 };
 use windows::Win32::UI::Shell::ABN_POSCHANGED;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    ReleaseCapture, SetCapture, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_RETURN, VK_SPACE, VK_UP,
+    VIRTUAL_KEY,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
-    GetMessageW, GetWindowRect, GetWindowThreadProcessId, HSHELL_HIGHBIT, HSHELL_MONITORCHANGED,
-    HSHELL_REDRAW, HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW,
-    IsIconic, IsWindow, KillTimer, LoadCursorW, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
+    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+    GetWindowRect, GetWindowThreadProcessId, HSHELL_HIGHBIT, HSHELL_MONITORCHANGED, HSHELL_REDRAW,
+    HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW, IsIconic,
+    IsWindow, KillTimer, LoadCursorW, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
     SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, SW_MINIMIZE, SW_RESTORE, SWP_NOACTIVATE,
-    SWP_NOZORDER, TPMPARAMS, TPM_RETURNCMD, TrackPopupMenuEx, TranslateMessage, WM_APP, WM_CLOSE,
-    WM_DESTROY, WM_LBUTTONDOWN, WM_PAINT, WM_RBUTTONDOWN, WM_TIMER, WNDCLASSW,
-    WS_EX_NOREDIRECTIONBITMAP, WS_POPUP, WS_VISIBLE, CW_USEDEFAULT,
+    SW_SHOW, SWP_NOZORDER, TranslateMessage, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_DESTROY,
+    WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
+    WM_RBUTTONDOWN, WM_TIMER,
+    WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{Result, w};
 
@@ -50,6 +65,145 @@ const HSHELL_FLASH: u32 = HSHELL_REDRAW | HSHELL_HIGHBIT;
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+    static MENU: RefCell<Option<MenuPopup>> = const { RefCell::new(None) };
+    /// Kept outside MENU: WM_GETOBJECT can arrive while MENU is borrowed.
+    static MENU_UIA: RefCell<Option<uia::Shared>> = const { RefCell::new(None) };
+}
+
+/// Context menu as its own popup window, drawn with our `MenuFlyout`.
+struct MenuPopup {
+    hwnd: HWND,
+    surface: Surface,
+    menu: MenuFlyout,
+    theme: Theme,
+    formats: Formats,
+    backdrop: bool,
+    target: HWND,
+}
+
+fn close_menu() {
+    MENU_UIA.with(|cell| drop(cell.borrow_mut().take()));
+    let hwnd = MENU.with(|cell| cell.borrow_mut().take().map(|popup| popup.hwnd));
+    if let Some(hwnd) = hwnd {
+        unsafe { _ = DestroyWindow(hwnd) };
+    }
+}
+
+fn menu_action(index: usize, target: HWND) {
+    if !unsafe { IsWindow(Some(target)) }.as_bool() {
+        return;
+    }
+    unsafe {
+        match index {
+            0 => { _ = ShowWindow(target, SW_RESTORE); _ = SetForegroundWindow(target); }
+            1 => { _ = ShowWindow(target, SW_MINIMIZE); }
+            2 => { _ = PostMessageW(Some(target), WM_CLOSE, WPARAM(0), LPARAM(0)); }
+            _ => {}
+        }
+    }
+}
+
+/// Copies the highlighted entry into the UIA model.
+fn sync_menu_uia() {
+    let focused = MENU.with(|cell| cell.borrow().as_ref().and_then(|popup| popup.menu.focused()));
+    MENU_UIA.with(|cell| {
+        if let Some(model) = cell.borrow().as_ref() {
+            model.borrow_mut().focused = focused;
+        }
+    });
+}
+
+/// Applies capture and activation from a `MenuFlyout` outcome.
+fn finish_menu(out: fluent_win::menu_flyout::Outcome, hwnd: HWND) {
+    sync_menu_uia();
+    match out.capture {
+        Some(true) => unsafe { _ = SetCapture(hwnd) },
+        Some(false) => unsafe { _ = ReleaseCapture() },
+        None => {}
+    }
+    if let Some(index) = out.invoked {
+        let target = MENU.with(|cell| cell.borrow().as_ref().map(|popup| popup.target));
+        close_menu();
+        if let Some(target) = target {
+            menu_action(index, target);
+        }
+    }
+}
+
+extern "system" fn menu_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_PAINT => {
+            unsafe { _ = ValidateRect(Some(hwnd), None) };
+            MENU.with(|cell| {
+                if let Some(popup) = cell.borrow_mut().as_mut() {
+                    let style = flyout::style(&popup.theme, popup.backdrop);
+                    let (w, h) = popup.surface.size();
+                    popup.surface.begin();
+                    let _ = popup.surface.with_opacity(1.0, |s| {
+                        flyout::draw_chrome(s, &style, (w, h));
+                        popup.menu.draw(s, &popup.theme, &popup.formats);
+                        Ok(())
+                    });
+                    let _ = popup.surface.end();
+                }
+            });
+        }
+        WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP => {
+            let input = MENU.with(|cell| {
+                cell.borrow_mut().as_mut().map(|popup| {
+                    let k = popup.surface.scale();
+                    let x = (lp.0 & 0xffff) as f32 / k;
+                    let y = ((lp.0 >> 16) & 0xffff) as f32 / k;
+                    match msg {
+                        WM_MOUSEMOVE => popup.menu.handle(Input::PointerMove(x, y)),
+                        WM_LBUTTONDOWN => popup.menu.handle(Input::PointerDown(x, y)),
+                        _ => popup.menu.handle(Input::PointerUp(x, y)),
+                    }
+                })
+            });
+            if let Some(out) = input {
+                finish_menu(out, hwnd);
+            }
+        }
+        WM_GETOBJECT if lp.0 as i32 == UiaRootObjectId => {
+            let root = MENU_UIA.with(|cell| cell.borrow().as_ref().map(uia::root));
+            if let Some(root) = root {
+                return unsafe { UiaReturnRawElementProvider(hwnd, wp, lp, &root) };
+            }
+        }
+        WM_UIA_INVOKE => {
+            let index = wp.0;
+            let target = MENU.with(|cell| cell.borrow().as_ref().map(|popup| popup.target));
+            close_menu();
+            if let Some(target) = target {
+                menu_action(index, target);
+            }
+        }
+        WM_KEYDOWN | WM_KEYUP => {
+            let vk = VIRTUAL_KEY(wp.0 as u16);
+            if vk == VK_ESCAPE && msg == WM_KEYDOWN {
+                close_menu();
+            } else {
+                let out = MENU.with(|cell| {
+                    cell.borrow_mut().as_mut().map(|popup| {
+                        let input = if msg == WM_KEYDOWN {
+                            Input::KeyDown(key_of(vk))
+                        } else {
+                            Input::KeyUp(key_of(vk))
+                        };
+                        popup.menu.handle(input)
+                    })
+                });
+                if let Some(out) = out {
+                    finish_menu(out, hwnd);
+                }
+            }
+        }
+        WM_ACTIVATE if u32::from(loword(wp.0 as isize) as u16) == WA_INACTIVE => close_menu(),
+        WM_DESTROY => {}
+        _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+    }
+    LRESULT(0)
 }
 
 struct App {
@@ -64,6 +218,22 @@ struct App {
     windows: Vec<WindowInfo>,
     icons: Vec<Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>>,
     active: Option<HWND>,
+}
+
+fn loword(v: isize) -> i16 {
+    (v & 0xffff) as i16
+}
+
+fn key_of(vk: VIRTUAL_KEY) -> Key {
+    match vk {
+        VK_UP => Key::Up,
+        VK_DOWN => Key::Down,
+        VK_HOME => Key::Home,
+        VK_END => Key::End,
+        VK_SPACE => Key::Space,
+        VK_RETURN => Key::Enter,
+        _ => Key::Other,
+    }
 }
 
 fn with_app(f: impl FnOnce(&mut App) -> Result<()>) -> LRESULT {
@@ -130,43 +300,68 @@ fn button_at(app: &App, x: f32) -> Option<HWND> {
     app.windows.get(index as usize).map(|info| info.hwnd)
 }
 
-/// Native context menu for a task button. Run outside the `APP` borrow because
-/// `TrackPopupMenuEx` pumps messages while it is open.
-fn context_menu(app_hwnd: HWND, px: i32, py: i32) {
-    let found = APP.with(|cell| {
-        cell.borrow().as_ref().map(|app| {
-            let scale = app.surface.scale();
-            (button_at(app, px as f32 / scale), scale)
-        })
-    });
-    let Some((Some(target), _scale)) = found else { return };
-    unsafe {
-        let Ok(menu) = CreatePopupMenu() else { return };
-        _ = AppendMenuW(menu, MF_STRING, 1, w!("Restaurar"));
-        _ = AppendMenuW(menu, MF_STRING, 2, w!("Minimizar"));
-        _ = AppendMenuW(menu, MF_STRING, 3, w!("Fechar"));
-        // Input is already in client pixels; ClientToScreen needs pixels, not DIPs.
-        let mut point = POINT { x: px, y: py };
-        _ = ClientToScreen(app_hwnd, &mut point);
-        _ = SetForegroundWindow(app_hwnd);
-        let command = TrackPopupMenuEx(menu, TPM_RETURNCMD.0, point.x, point.y, app_hwnd,
-            None::<*const TPMPARAMS>);
-        _ = DestroyMenu(menu);
-        // The window may have closed while the menu was open; never act on a
-        // handle that Windows could have reused for another window.
-        if !IsWindow(Some(target)).as_bool() {
-            return;
-        }
-        match command.0 {
-            1 => { _ = ShowWindow(target, SW_RESTORE); _ = SetForegroundWindow(target); }
-            2 => { _ = ShowWindow(target, SW_MINIMIZE); }
-            3 => { _ = PostMessageW(Some(target), WM_CLOSE, WPARAM(0), LPARAM(0)); }
-            _ => {}
-        }
-    }
-}
-
 impl App {
+    /// Opens a WinUI `MenuFlyout` next to the pointer, aimed at `target`.
+    fn open_menu(&mut self, px: i32, py: i32, target: HWND) -> Result<()> {
+        close_menu();
+        let entries = vec![
+            Entry::Item(Item::new("Restaurar")),
+            Entry::Item(Item::new("Minimizar")),
+            Entry::Item(Item::new("Fechar")),
+        ];
+        let sizes = entries.iter()
+            .map(|entry| entry.measure(&self.surface, &self.formats))
+            .collect::<Result<Vec<_>>>()?;
+        let menu = MenuFlyout::new(entries, &sizes);
+        let uia_items = ["Restaurar", "Minimizar", "Fechar"].iter().enumerate()
+            .map(|(i, name)| uia::Item {
+                id: i as u64,
+                name: (*name).to_owned(),
+                rect: menu.rects[i],
+                enabled: true,
+                toggle: None,
+                control_type: UIA_MenuItemControlTypeId,
+                range: None,
+            })
+            .collect();
+        let (w, h) = menu.size();
+        let mut screen = POINT { x: px, y: py };
+        unsafe { _ = ClientToScreen(self.hwnd, &mut screen) };
+        let anchor = RECT {
+            left: screen.x - 8, top: screen.y - 8, right: screen.x + 8, bottom: screen.y + 8,
+        };
+        let (work, k) = unsafe {
+            let monitor = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            _ = GetMonitorInfoW(monitor, &mut info);
+            let (mut dx, mut dy) = (96, 96);
+            _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+            (info.rcWork, dx as f32 / 96.0)
+        };
+        let dips = |r: RECT| rect(r.left as f32 / k, r.top as f32 / k, r.right as f32 / k, r.bottom as f32 / k);
+        let (placed, _) = flyout::place(dips(anchor), w, h, dips(work), flyout::Placement::Bottom);
+        let origin = ((placed.left * k).round() as i32, (placed.top * k).round() as i32);
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+                w!("fluent-win-taskbar-menu"), w!(""), WS_POPUP, origin.0, origin.1,
+                (w * k).round() as i32, (h * k).round() as i32, Some(self.hwnd), None, None, None)?
+        };
+        let backdrop = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, self.theme.dark).is_ok();
+        let surface = Surface::new(hwnd)?;
+        let model = Rc::new(RefCell::new(uia::Model {
+            hwnd, scale: k, items: uia_items, focused: None,
+        }));
+        MENU_UIA.with(|cell| *cell.borrow_mut() = Some(model));
+        MENU.with(|cell| {
+            *cell.borrow_mut() = Some(MenuPopup {
+                hwnd, surface, menu, theme: self.theme, formats: self.formats.clone(), backdrop, target,
+            });
+        });
+        unsafe { _ = ShowWindow(hwnd, SW_SHOW) };
+        Ok(())
+    }
+
     /// Re-query the work area and place the bar; also called on ABN_POSCHANGED.
     fn reposition(&mut self) -> Result<()> {
         let k = self.surface.scale();
@@ -298,13 +493,24 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             let k = a.surface.scale();
             a.activate_button((lp.0 & 0xffff) as f32 / k)
         }),
-        // lParam is already in client pixels; ClientToScreen and the menu want pixels.
+        // lParam is in client pixels; the flyout places itself in screen pixels.
         WM_RBUTTONDOWN => {
-            context_menu(hwnd, (lp.0 & 0xffff) as i32, ((lp.0 >> 16) & 0xffff) as i32);
+            let px = (lp.0 & 0xffff) as i32;
+            let py = ((lp.0 >> 16) & 0xffff) as i32;
+            let target = APP.with(|cell| {
+                cell.borrow().as_ref().and_then(|app| {
+                    let k = app.surface.scale();
+                    button_at(app, px as f32 / k)
+                })
+            });
+            if let Some(target) = target {
+                with_app(|app| app.open_menu(px, py, target));
+            }
             LRESULT(0)
         }
         WM_TIMER if wp.0 == CLOCK_TIMER => with_app(App::render),
         WM_DESTROY => unsafe {
+            close_menu();
             _ = KillTimer(Some(hwnd), CLOCK_TIMER);
             // Dropping `App` unregisters the appbar through `AppBar::drop`.
             APP.with(|cell| drop(cell.borrow_mut().take()));
@@ -328,6 +534,13 @@ fn main() -> Result<()> {
             hInstance: instance.into(),
             lpszClassName: class,
             lpfnWndProc: Some(wndproc),
+            ..Default::default()
+        });
+        RegisterClassW(&WNDCLASSW {
+            hCursor: LoadCursorW(None, IDC_ARROW)?,
+            hInstance: instance.into(),
+            lpszClassName: w!("fluent-win-taskbar-menu"),
+            lpfnWndProc: Some(menu_wndproc),
             ..Default::default()
         });
         let k = GetDpiForSystem() as f32 / 96.0;
