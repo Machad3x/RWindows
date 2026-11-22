@@ -159,6 +159,13 @@ Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As 
 | Alto contraste: tabela própria (`SystemColor*`) e trilho ligado com borda de 1 DIP (`ToggleSwitchOnStrokeThickness` = 1 só nesse dicionário) | dicionário `HighContrast` |
 | Foco: alvo `SwitchAreaGrid` (linha recuada 5 DIPs), anel a `-7,-3,-7,-3` | `IsTemplateFocusTarget`, `FocusVisualMargin` |
 
+UI Automation: no modelo vira um item com `toggle = Some(IsOn)` e Name = header, o que expõe tipo Button com só o padrão Toggle, como o `ToggleSwitchAutomationPeer` (que também devolve `AutomationControlType_Button` e monta o Name do header).
+
+Exemplo: "Modo avião" (Ativado/Desativado) numa terceira linha do `buttons`, que agora guarda os controles num `enum Control { Button, Switch }`. Verificado:
+- Cliente UIA real: tipo "botão", só `TogglePattern`, `Toggle()` dá Off → On → Off → On com os eventos `0->1`, `1->0`, `0->1`.
+- Mouse real (`SendInput`, 100%): tap liga; arraste de 6 px não alterna; arraste de 16 px alterna para os dois lados.
+- Tela: trilho ligado no acento, knob branco à direita, anel de foco em volta da área do switch. 51.8 MB com UIA ativo, código de saída 0.
+
 Simplificações: durante o drag as cores ficam as do estado atual (no WinUI o estado `Dragging` também mantém o visual do lado de partida); sem `HeaderPlacement=Left`; o raio do anel de foco usa o mesmo ajuste do Button (+3).
 
 ## UI Automation

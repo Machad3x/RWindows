@@ -9,7 +9,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use fluent_win::backdrop;
-use fluent_win::button::{Button, FocusKind, Input, Key, Response};
+use fluent_win::button::{Button, FocusKind, Input, Key, Response, Visual};
+use fluent_win::toggle_switch::ToggleSwitch;
+use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::theme::{self, Theme};
 use fluent_win::uia::{self, WM_UIA_FOCUS, WM_UIA_INVOKE};
@@ -54,13 +56,89 @@ struct App {
     theme: Theme,
     label: IDWriteTextFormat,
     body: IDWriteTextFormat,
-    buttons: Vec<Button>,
+    /// Left-aligned format for ToggleSwitch header and content.
+    switch_text: IDWriteTextFormat,
+    buttons: Vec<Control>,
     focused: Option<usize>,
     status: String,
     tracking: bool,
     uia: uia::Shared,
     /// UIA events to raise once the APP borrow ends (see `with_app`).
     pending: Vec<(usize, UiaEvent)>,
+}
+
+/// One focusable control of the window.
+enum Control {
+    Button(Button),
+    Switch(Box<ToggleSwitch>),
+}
+
+impl Control {
+    fn handle(&mut self, input: Input) -> Response {
+        match self {
+            Control::Button(b) => b.handle(input),
+            Control::Switch(s) => s.handle(input),
+        }
+    }
+
+    fn invoke(&mut self) -> Response {
+        match self {
+            Control::Button(b) => b.invoke(),
+            Control::Switch(s) => s.invoke(),
+        }
+    }
+
+    fn draw(&self, s: &Surface, t: &Theme, label: &IDWriteTextFormat, switch: &IDWriteTextFormat) -> Result<()> {
+        match self {
+            Control::Button(b) => b.draw(s, t, label),
+            Control::Switch(w) => w.draw(s, t, switch),
+        }
+    }
+
+    fn animating(&self) -> bool {
+        match self {
+            Control::Button(b) => b.animating(),
+            Control::Switch(s) => s.animating(),
+        }
+    }
+
+    fn is_captured(&self) -> bool {
+        match self {
+            Control::Button(b) => b.is_captured(),
+            Control::Switch(s) => s.is_captured(),
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        let visual = match self {
+            Control::Button(b) => b.visual(),
+            Control::Switch(s) => s.visual(),
+        };
+        visual != Visual::Disabled
+    }
+
+    /// UIA Name: the label, or the ToggleSwitch header.
+    fn name(&self) -> &str {
+        match self {
+            Control::Button(b) => &b.label,
+            Control::Switch(s) => &s.header,
+        }
+    }
+
+    fn rect(&self) -> D2D_RECT_F {
+        match self {
+            Control::Button(b) => b.rect,
+            Control::Switch(s) => s.rect,
+        }
+    }
+
+    /// `IsChecked` / `IsOn` (Toggle pattern); `None` for a push button.
+    fn checked(&self) -> Option<bool> {
+        match self {
+            Control::Button(b) => b.is_checked(),
+            Control::Switch(s) => Some(s.is_on()),
+        }
+    }
 }
 
 /// A UIA notification queued until the APP borrow ends.
@@ -89,9 +167,9 @@ impl App {
             s.fill_round(rect(0.0, 0.0, w, h), 0.0, c.window);
         }
         for b in &self.buttons {
-            b.draw(s, t, &self.label)?;
+            b.draw(s, t, &self.label, &self.switch_text)?;
         }
-        s.text(&self.status, &self.body, rect(PAD, 136.0, PAD + 500.0, 160.0), t.text_secondary);
+        s.text(&self.status, &self.body, rect(PAD, 200.0, PAD + 500.0, 224.0), t.text_secondary);
         s.end()
     }
 
@@ -102,10 +180,10 @@ impl App {
         m.scale = self.surface.scale();
         m.focused = self.focused;
         m.items = self.buttons.iter().map(|b| uia::Item {
-            name: b.label.clone(),
-            rect: b.rect,
-            enabled: b.visual() != fluent_win::button::Visual::Disabled,
-            toggle: b.is_checked(),
+            name: b.name().to_owned(),
+            rect: b.rect(),
+            enabled: b.enabled(),
+            toggle: b.checked(),
         }).collect();
     }
 
@@ -123,13 +201,13 @@ impl App {
     /// button has already flipped `IsChecked`.
     fn clicked(&mut self, i: usize) {
         let b = &self.buttons[i];
-        let checked = b.is_checked();
+        let checked = b.checked();
         self.status = match checked {
-            Some(on) => format!("{}: {}", b.label, if on { "ligado" } else { "desligado" }),
-            None => format!("Clicou: {}", b.label),
+            Some(on) => format!("{}: {}", b.name(), if on { "ligado" } else { "desligado" }),
+            None => format!("Clicou: {}", b.name()),
         };
         if let Some(on) = checked {
-            // ToggleButton raises ToggleState changed, not Invoked (its peer has no Invoke).
+            // ToggleButton/ToggleSwitch raise ToggleState changed, not Invoked (their peers have no Invoke).
             self.raise(i, UiaEvent::Toggled(on));
         } else {
             self.raise(i, UiaEvent::Event(UIA_Invoke_InvokedEventId));
@@ -137,7 +215,7 @@ impl App {
     }
 
     fn animating(&self) -> bool {
-        self.buttons.iter().any(Button::animating)
+        self.buttons.iter().any(Control::animating)
     }
 
     /// Sends `input` to the buttons and applies capture, focus and click effects.
@@ -145,7 +223,7 @@ impl App {
     /// routes captured pointer events), so dragging across others does not light them.
     fn dispatch(&mut self, input: Input) -> Result<()> {
         let pointer = matches!(input, Input::PointerMove(..) | Input::PointerUp(..) | Input::PointerLeave);
-        let captor = self.buttons.iter().position(Button::is_captured).filter(|_| pointer);
+        let captor = self.buttons.iter().position(Control::is_captured).filter(|_| pointer);
         let mut redraw = false;
         for i in 0..self.buttons.len() {
             if captor.is_some_and(|c| c != i) {
@@ -212,7 +290,7 @@ impl App {
         let start = self.focused.unwrap_or(if back { 0 } else { n - 1 });
         let next = (1..=n)
             .map(|k| if back { (start + n - k) % n } else { (start + k) % n })
-            .find(|&i| self.buttons[i].visual() != fluent_win::button::Visual::Disabled);
+            .find(|&i| self.buttons[i].enabled());
         if self.move_focus(next, FocusKind::Keyboard)? {
             self.render()?;
         }
@@ -444,7 +522,7 @@ fn main() -> Result<()> {
         let k = GetDpiForSystem() as f32 / 96.0;
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Button"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
-            (520.0 * k) as i32, (240.0 * k) as i32, None, None, Some(instance.into()), None)?;
+            (520.0 * k) as i32, (300.0 * k) as i32, None, None, Some(instance.into()), None)?;
 
         let theme = Theme::system();
         if let Err(e) = backdrop::apply(hwnd, DWMSBT_MAINWINDOW, DWMWCP_ROUND, theme.dark) {
@@ -464,18 +542,24 @@ fn main() -> Result<()> {
             let mut b = Button::new(text, rect(x, PAD, x + w, PAD + h), accent);
             b.set_enabled(enabled);
             x += w + GAP;
-            buttons.push(b);
+            buttons.push(Control::Button(b));
         }
         // Second row: a ToggleButton (Quick Settings tile) and a SubtleButton (taskbar).
         let (w, h) = Button::desired_size(&surface, &label, "Wi-Fi")?;
         let top = PAD + h + GAP * 2.0;
-        buttons.push(Button::toggle("Wi-Fi", rect(PAD, top, PAD + w, top + h), true));
+        buttons.push(Control::Button(Button::toggle("Wi-Fi", rect(PAD, top, PAD + w, top + h), true)));
         let x = PAD + w + GAP;
         let (w, h) = Button::desired_size(&surface, &label, "Iniciar")?;
-        buttons.push(Button::subtle("Iniciar", rect(x, top, x + w, top + h)));
+        buttons.push(Control::Button(Button::subtle("Iniciar", rect(x, top, x + w, top + h))));
+        // Third row: a ToggleSwitch with header (Settings style).
+        let switch_text = ToggleSwitch::text_format(&surface)?;
+        let (header, on, off) = ("Modo avião", "Ativado", "Desativado");
+        let (w, sh) = ToggleSwitch::desired_size(&surface, &switch_text, header, on, off)?;
+        let top = top + h + GAP;
+        buttons.push(Control::Switch(Box::new(ToggleSwitch::new(header, on, off, rect(PAD, top, PAD + w, top + sh), false))));
 
         let mut app = App {
-            hwnd, surface, theme, label, body, buttons,
+            hwnd, surface, theme, label, body, switch_text, buttons,
             focused: None,
             status: "Tab para focar, Espaço/Enter para clicar".to_owned(),
             tracking: false,

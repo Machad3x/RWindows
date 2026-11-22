@@ -5,7 +5,7 @@
 //! Shares [`Input`], [`Response`] and [`Visual`] with [`crate::button`].
 
 use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
-use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
+use windows::Win32::Graphics::DirectWrite::{DWRITE_PARAGRAPH_ALIGNMENT_CENTER, IDWriteTextFormat};
 use windows::core::Result;
 
 use crate::button::{FocusKind, Input, Key, Response, Visual};
@@ -126,6 +126,14 @@ impl ToggleSwitch {
             off_from: Visual::Rest,
             off_t: Tween::idle(1.0),
         }
+    }
+
+    /// Body text format for header and content: left-aligned
+    /// (`HorizontalContentAlignment=Left`), vertically centered.
+    pub fn text_format(surface: &Surface) -> Result<IDWriteTextFormat> {
+        let format = surface.format(&theme::BODY)?;
+        unsafe { format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)? };
+        Ok(format)
     }
 
     /// Auto size: header line + 4 (when present) over a 40-DIP row; width at
