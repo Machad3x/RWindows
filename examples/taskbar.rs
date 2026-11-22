@@ -35,7 +35,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     GetMessageW, GetWindowRect, GetWindowThreadProcessId, HSHELL_HIGHBIT, HSHELL_MONITORCHANGED,
     HSHELL_REDRAW, HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW,
-    IsIconic, KillTimer, LoadCursorW, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
+    IsIconic, IsWindow, KillTimer, LoadCursorW, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
     SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, SW_MINIMIZE, SW_RESTORE, SWP_NOACTIVATE,
     SWP_NOZORDER, TPMPARAMS, TPM_RETURNCMD, TrackPopupMenuEx, TranslateMessage, WM_APP, WM_CLOSE,
     WM_DESTROY, WM_LBUTTONDOWN, WM_PAINT, WM_RBUTTONDOWN, WM_TIMER, WNDCLASSW,
@@ -132,23 +132,31 @@ fn button_at(app: &App, x: f32) -> Option<HWND> {
 
 /// Native context menu for a task button. Run outside the `APP` borrow because
 /// `TrackPopupMenuEx` pumps messages while it is open.
-fn context_menu(app_hwnd: HWND, x: f32, y: f32) {
-    let Some(target) = APP.with(|cell| {
-        cell.borrow().as_ref().and_then(|app| button_at(app, x))
-    }) else {
-        return;
-    };
+fn context_menu(app_hwnd: HWND, px: i32, py: i32) {
+    let found = APP.with(|cell| {
+        cell.borrow().as_ref().map(|app| {
+            let scale = app.surface.scale();
+            (button_at(app, px as f32 / scale), scale)
+        })
+    });
+    let Some((Some(target), _scale)) = found else { return };
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         _ = AppendMenuW(menu, MF_STRING, 1, w!("Restaurar"));
         _ = AppendMenuW(menu, MF_STRING, 2, w!("Minimizar"));
         _ = AppendMenuW(menu, MF_STRING, 3, w!("Fechar"));
-        let mut point = POINT { x: x as i32, y: y as i32 };
+        // Input is already in client pixels; ClientToScreen needs pixels, not DIPs.
+        let mut point = POINT { x: px, y: py };
         _ = ClientToScreen(app_hwnd, &mut point);
         _ = SetForegroundWindow(app_hwnd);
         let command = TrackPopupMenuEx(menu, TPM_RETURNCMD.0, point.x, point.y, app_hwnd,
             None::<*const TPMPARAMS>);
         _ = DestroyMenu(menu);
+        // The window may have closed while the menu was open; never act on a
+        // handle that Windows could have reused for another window.
+        if !IsWindow(Some(target)).as_bool() {
+            return;
+        }
         match command.0 {
             1 => { _ = ShowWindow(target, SW_RESTORE); _ = SetForegroundWindow(target); }
             2 => { _ = ShowWindow(target, SW_MINIMIZE); }
@@ -290,9 +298,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             let k = a.surface.scale();
             a.activate_button((lp.0 & 0xffff) as f32 / k)
         }),
+        // lParam is already in client pixels; ClientToScreen and the menu want pixels.
         WM_RBUTTONDOWN => {
-            let k = APP.with(|cell| cell.borrow().as_ref().map_or(1.0, |a| a.surface.scale()));
-            context_menu(hwnd, (lp.0 & 0xffff) as f32 / k, ((lp.0 >> 16) & 0xffff) as f32 / k);
+            context_menu(hwnd, (lp.0 & 0xffff) as i32, ((lp.0 >> 16) & 0xffff) as i32);
             LRESULT(0)
         }
         WM_TIMER if wp.0 == CLOCK_TIMER => with_app(App::render),

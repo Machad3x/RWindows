@@ -52,7 +52,7 @@ Modo de desenvolvimento **seguro**: o shell roda como um aplicativo comum, com o
 
 - [x] Janela da barra como **appbar** (`SHAppBarMessage`: `ABM_NEW`, `ABM_QUERYPOS`, `ABM_SETPOS`, `ABM_REMOVE` no Drop), reservando a borda inferior; `examples/taskbar.rs` verificado (0,984,1920,1032 px) com data/hora do sistema. Falta tratar `ABN_POSCHANGED` de outros appbars e multi-monitor.
 - [x] **Lista de janelas**: `window_list::enumerate()` com `EnumWindows` + filtro (visíveis, sem dono, sem `WS_EX_TOOLWINDOW`/`WS_EX_NOACTIVATE`); `ShellHook` com `RegisterShellHookWindow` e mensagem `"SHELLHOOK"`, desregistrado no Drop. Botões com estado ativo e clique ativar/minimizar verificado no Windows real. Ícones reais por executável da janela verificados no Windows. Menu de contexto nativo (Restaurar/Minimizar/Fechar) verificado na tela. Falta menu Fluent desenhado pelo crate.
-- [ ] Botões de tarefa: ícone, estado ativo, piscar, ativar/minimizar/restaurar ao clicar, menu de contexto da janela.
+- [x] Botões de tarefa: ícone real do executável, estado ativo, ativar/minimizar/restaurar ao clicar e menu de contexto (Restaurar/Minimizar/Fechar), verificados no Windows. Falta: piscar (HSHELL_FLASH) e menu desenhado em Fluent pelo crate.
 - [ ] Relógio e data, com formato do sistema.
 - [ ] Vários monitores e DPI por monitor.
 - [ ] Hospedar a **área de notificação** (bandeja). ❓ Como o `Shell_NotifyIcon` chega ao shell, qual janela o recebe e como reenviar os ícones quando a barra é recriada (mensagem `TaskbarCreated`): o Learn só diz "envia uma mensagem para a área de status da barra de tarefas"; o resto precisa ser verificado.
