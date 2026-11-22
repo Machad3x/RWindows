@@ -207,6 +207,10 @@ Simplificações: durante o drag as cores ficam as do estado atual (no WinUI o e
 | Alto contraste: trilho 2 DIPs ButtonText, valor Highlight, thumb ButtonText/Highlight/HotLight/GrayText (`COLOR_HOTLIGHT` novo em `SystemColors`), anel ButtonText com borda sólida | dicionário `HighContrast` + `generic.xaml` |
 | Foco: o controle todo a `-7,0,-7,0` | `FocusVisualMargin` |
 
+UI Automation: tipo Slider com o padrão RangeValue (`uia::Range` no `Item`): Value, Minimum, Maximum, SmallChange, LargeChange (10, o padrão do `RangeBase`) e IsReadOnly (= desabilitado). `SetValue` fora do intervalo → `E_INVALIDARG` (o cliente .NET vê `ArgumentException`); desabilitado → `UIA_E_ELEMENTNOTENABLED`; senão posta `WM_UIA_SET_VALUE` com o `f64` no `lParam` (só alvos de 64 bits, checado em compilação). O `Panel` compara o valor antes e depois de cada chamada e emite `Event::ValueChanged { old, new }`; o exemplo dispara a troca de `UIA_RangeValueValuePropertyId`.
+
+Exemplo: "Volume" (0–100, começa em 40) numa quarta linha. Verificado com cliente UIA real: tipo "controle deslizante", só RangeValue, valores 40/0/100/1/10, `SetValue(75)` → 75, `SetValue(150)` → `ArgumentException`; teclado (mensagens postadas com foco via UIA) → 76, 77, 76, Home 0, End 100; mouse real: press no trilho em 25% → 25, arrastar até 60% → 60; 13 eventos de valor recebidos. 52.1 MB, código de saída 0.
+
 Simplificações: sem header, sem marcas (`TickBar`), sem tooltip de valor, só horizontal; perder o foco encerra um press (o XAML mantém a captura); o trilho de 2 DIPs do alto contraste fica centrado na linha do thumb (no XAML fica 1 DIP acima).
 
 ## Panel (roteamento comum)
@@ -219,7 +223,7 @@ Simplificações: sem header, sem marcas (`TickBar`), sem tooltip de valor, só 
 | Press que pede foco tira o foco do anterior (que solta a captura se a tinha: Tab com o mouse apertado) | `OnLostFocus` |
 | Tab/Shift+Tab pulam controles desabilitados | `IsTabStop` em controle desabilitado |
 | `Outcome { redraw, capture, events }`: a janela chama `SetCapture`/`ReleaseCapture` (vale o último pedido), dispara os eventos UIA e repinta | — |
-| Eventos: `Invoked(i)` para botão comum, `Toggled { index, old, new }` para quem tem o padrão Toggle (estado antes e depois do clique), `Focused(i)` quando o foco muda | Peers do WinUI: só Invoke ou só Toggle |
+| Eventos: `Invoked(i)` para botão comum, `Toggled { index, old, new }` para quem tem o padrão Toggle (estado antes e depois do clique), `ValueChanged { index, old, new }` para controles de intervalo, `Focused(i)` quando o foco muda | Peers do WinUI: só Invoke ou só Toggle |
 | `trait Control` (Button, ToggleSwitch, CheckBox) e `Formats` (os quatro formatos de texto); `uia_items()` monta o modelo do `uia` | — |
 
 ## UI Automation

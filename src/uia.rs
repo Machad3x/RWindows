@@ -15,7 +15,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use windows::Win32::Foundation::{E_OUTOFMEMORY, HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Foundation::{E_INVALIDARG, E_OUTOFMEMORY, HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::System::Com::SAFEARRAY;
@@ -50,6 +50,34 @@ pub struct Item {
     /// `ControlType`: `UIA_ButtonControlTypeId` (Button, ToggleButton, ToggleSwitch) or
     /// `UIA_CheckBoxControlTypeId` (`CheckBoxAutomationPeer`).
     pub control_type: UIA_CONTROLTYPE_ID,
+    /// RangeValue pattern data (Slider); `None` for controls without it.
+    pub range: Option<Range>,
+}
+
+/// `IRangeValueProvider` properties of a range control.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Range {
+    /// `Value`.
+    pub value: f64,
+    /// `Minimum`.
+    pub minimum: f64,
+    /// `Maximum`.
+    pub maximum: f64,
+    /// `SmallChange`.
+    pub small_change: f64,
+    /// `LargeChange`.
+    pub large_change: f64,
+}
+
+/// Posted by `IRangeValueProvider::SetValue`; `wParam` = control index, `lParam` =
+/// the requested value's `f64` bits (64-bit targets only).
+pub const WM_UIA_SET_VALUE: u32 = WM_APP + 0x57;
+
+const _: () = assert!(size_of::<isize>() == size_of::<f64>(), "WM_UIA_SET_VALUE carries f64 bits in LPARAM");
+
+/// Decodes the value of a [`WM_UIA_SET_VALUE`] message.
+pub fn set_value_of(lp: LPARAM) -> f64 {
+    f64::from_bits(lp.0 as u64)
 }
 
 /// What the providers expose; the app keeps it current.
@@ -107,7 +135,7 @@ struct Root {
     model: Shared,
 }
 
-#[implement(IRawElementProviderSimple, IRawElementProviderFragment, IInvokeProvider, IToggleProvider)]
+#[implement(IRawElementProviderSimple, IRawElementProviderFragment, IInvokeProvider, IToggleProvider, IRangeValueProvider)]
 struct ItemProvider {
     model: Shared,
     index: usize,
@@ -212,6 +240,11 @@ impl ItemProvider_Impl {
         self.model.borrow().items.get(self.index).cloned().ok_or_else(|| Error::from(NOT_AVAILABLE))
     }
 
+    /// RangeValue data of this control (`UIA_E_ELEMENTNOTAVAILABLE` without it).
+    fn range(&self) -> Result<Range> {
+        self.info()?.range.ok_or_else(|| Error::from(NOT_AVAILABLE))
+    }
+
     fn post(&self, msg: u32) -> Result<()> {
         let hwnd = self.model.borrow().hwnd;
         unsafe { PostMessageW(Some(hwnd), msg, WPARAM(self.index), LPARAM(0)) }
@@ -224,8 +257,16 @@ impl IRawElementProviderSimple_Impl for ItemProvider_Impl {
     }
 
     fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> Result<IUnknown> {
-        // ToggleButtonAutomationPeer exposes Toggle only; ButtonAutomationPeer, Invoke.
-        let pattern = if self.info()?.toggle.is_some() { UIA_TogglePatternId } else { UIA_InvokePatternId };
+        // ToggleButtonAutomationPeer exposes Toggle only; ButtonAutomationPeer, Invoke;
+        // SliderAutomationPeer (RangeBase), RangeValue.
+        let item = self.info()?;
+        let pattern = if item.range.is_some() {
+            UIA_RangeValuePatternId
+        } else if item.toggle.is_some() {
+            UIA_TogglePatternId
+        } else {
+            UIA_InvokePatternId
+        };
         if id == pattern { Ok(self.to_object().to_interface()) } else { null() }
     }
 
@@ -340,6 +381,40 @@ impl IToggleProvider_Impl for ItemProvider_Impl {
     }
 }
 
+impl IRangeValueProvider_Impl for ItemProvider_Impl {
+    fn SetValue(&self, value: f64) -> Result<()> {
+        let item = self.info()?;
+        if !item.enabled {
+            return Err(Error::from(NOT_ENABLED));
+        }
+        let r = self.range()?;
+        // Learn (IRangeValueProvider::SetValue): out-of-range values raise ArgumentOutOfRange.
+        if !(r.minimum..=r.maximum).contains(&value) {
+            return Err(Error::from(E_INVALIDARG));
+        }
+        let hwnd = self.model.borrow().hwnd;
+        unsafe { PostMessageW(Some(hwnd), WM_UIA_SET_VALUE, WPARAM(self.index), LPARAM(value.to_bits() as isize)) }
+    }
+    fn Value(&self) -> Result<f64> {
+        Ok(self.range()?.value)
+    }
+    fn IsReadOnly(&self) -> Result<windows::core::BOOL> {
+        Ok((!self.info()?.enabled).into())
+    }
+    fn Maximum(&self) -> Result<f64> {
+        Ok(self.range()?.maximum)
+    }
+    fn Minimum(&self) -> Result<f64> {
+        Ok(self.range()?.minimum)
+    }
+    fn LargeChange(&self) -> Result<f64> {
+        Ok(self.range()?.large_change)
+    }
+    fn SmallChange(&self) -> Result<f64> {
+        Ok(self.range()?.small_change)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,9 +434,9 @@ mod tests {
             hwnd,
             scale,
             items: vec![
-                Item { name: "Configurações".into(), rect: rect(10.0, 10.0, 110.0, 42.0), enabled: true, toggle: None, control_type: UIA_ButtonControlTypeId },
-                Item { name: "Salvar".into(), rect: rect(120.0, 10.0, 180.0, 42.0), enabled: true, toggle: None, control_type: UIA_ButtonControlTypeId },
-                Item { name: "Desabilitado".into(), rect: rect(190.0, 10.0, 290.0, 42.0), enabled: false, toggle: None, control_type: UIA_ButtonControlTypeId },
+                Item { name: "Configurações".into(), rect: rect(10.0, 10.0, 110.0, 42.0), enabled: true, toggle: None, control_type: UIA_ButtonControlTypeId, range: None },
+                Item { name: "Salvar".into(), rect: rect(120.0, 10.0, 180.0, 42.0), enabled: true, toggle: None, control_type: UIA_ButtonControlTypeId, range: None },
+                Item { name: "Desabilitado".into(), rect: rect(190.0, 10.0, 290.0, 42.0), enabled: false, toggle: None, control_type: UIA_ButtonControlTypeId, range: None },
             ],
             focused: Some(1),
         }))
@@ -570,7 +645,7 @@ mod tests {
 
     /// Appends toggle button 3 (`checked`, `enabled`).
     fn with_toggle(m: &Shared, checked: bool, enabled: bool) -> usize {
-        let item = Item { name: "Wi-Fi".into(), rect: rect(300.0, 10.0, 360.0, 42.0), enabled, toggle: Some(if checked { ToggleState_On } else { ToggleState_Off }), control_type: UIA_ButtonControlTypeId };
+        let item = Item { name: "Wi-Fi".into(), rect: rect(300.0, 10.0, 360.0, 42.0), enabled, toggle: Some(if checked { ToggleState_On } else { ToggleState_Off }), control_type: UIA_ButtonControlTypeId, range: None };
         m.borrow_mut().items.push(item);
         3
     }
@@ -619,6 +694,61 @@ mod tests {
         let m = model(1.0);
         let i = with_toggle(&m, false, false);
         assert_eq!(unsafe { toggle_of(&m, i).Toggle() }.map_err(|e| e.code()), Err(NOT_ENABLED));
+    }
+
+    /// Appends slider 3 (0..100 at 40, enabled as given).
+    fn with_slider(m: &Shared, enabled: bool) -> usize {
+        let range = Range { value: 40.0, minimum: 0.0, maximum: 100.0, small_change: 1.0, large_change: 10.0 };
+        let item = Item {
+            name: "Volume".into(), rect: rect(300.0, 10.0, 500.0, 42.0), enabled, toggle: None,
+            control_type: UIA_SliderControlTypeId, range: Some(range),
+        };
+        m.borrow_mut().items.push(item);
+        3
+    }
+
+    fn range_of(m: &Shared, i: usize) -> IRangeValueProvider {
+        unsafe { item(m, i).GetPatternProvider(UIA_RangeValuePatternId).unwrap() }.cast().unwrap()
+    }
+
+    #[test]
+    fn slider_should_expose_range_value_only() {
+        let m = model(1.0);
+        let i = with_slider(&m, true);
+        let p = |id| unsafe { item(&m, i).GetPatternProvider(id) }.is_ok();
+        assert_eq!((p(UIA_RangeValuePatternId), p(UIA_InvokePatternId), p(UIA_TogglePatternId)), (true, false, false));
+    }
+
+    #[test]
+    fn range_properties_should_follow_the_model() {
+        let m = model(1.0);
+        let i = with_slider(&m, true);
+        let r = range_of(&m, i);
+        let v = unsafe { (r.Value().unwrap(), r.Minimum().unwrap(), r.Maximum().unwrap(), r.SmallChange().unwrap(), r.LargeChange().unwrap(), r.IsReadOnly().unwrap().as_bool()) };
+        assert_eq!(v, (40.0, 0.0, 100.0, 1.0, 10.0, false));
+    }
+
+    #[test]
+    fn set_value_should_post_the_index_and_the_value_bits() {
+        let m = model(1.0);
+        let i = with_slider(&m, true);
+        unsafe { range_of(&m, i).SetValue(62.5).unwrap() };
+        let posted = take_posted(m.borrow().hwnd, WM_UIA_SET_VALUE).map(|(w, l)| (w.0, set_value_of(l)));
+        assert_eq!(posted, Some((i, 62.5)));
+    }
+
+    #[test]
+    fn set_value_outside_the_range_should_fail_with_invalid_arg() {
+        let m = model(1.0);
+        let i = with_slider(&m, true);
+        assert_eq!(unsafe { range_of(&m, i).SetValue(101.0) }.map_err(|e| e.code()), Err(E_INVALIDARG));
+    }
+
+    #[test]
+    fn set_value_on_a_disabled_slider_should_fail_with_not_enabled() {
+        let m = model(1.0);
+        let i = with_slider(&m, false);
+        assert_eq!(unsafe { range_of(&m, i).SetValue(50.0) }.map_err(|e| e.code()), Err(NOT_ENABLED));
     }
 
     #[test]

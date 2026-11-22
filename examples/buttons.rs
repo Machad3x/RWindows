@@ -14,9 +14,10 @@ use fluent_win::button::{Button, FocusKind, Input, Key};
 use fluent_win::check_box::{CheckBox, CheckState};
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::panel::{Control, Event, Formats, Outcome, Panel};
+use fluent_win::slider::{self, Slider};
 use fluent_win::theme::Theme;
 use fluent_win::toggle_switch::ToggleSwitch;
-use fluent_win::uia::{self, WM_UIA_FOCUS, WM_UIA_INVOKE};
+use fluent_win::uia::{self, WM_UIA_FOCUS, WM_UIA_INVOKE, WM_UIA_SET_VALUE};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::ValidateRect;
@@ -26,7 +27,7 @@ use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     IRawElementProviderSimple, ToggleState, ToggleState_Indeterminate, ToggleState_On,
     UIA_AutomationFocusChangedEventId, UIA_BoundingRectanglePropertyId, UIA_EVENT_ID, UIA_Invoke_InvokedEventId,
-    UIA_ToggleToggleStatePropertyId, UiaClientsAreListening, UiaRaiseAutomationEvent,
+    UIA_RangeValueValuePropertyId, UIA_ToggleToggleStatePropertyId, UiaClientsAreListening, UiaRaiseAutomationEvent,
     UiaRaiseAutomationPropertyChangedEvent, UiaReturnRawElementProvider, UiaRootObjectId,
 };
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -35,7 +36,8 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-    VIRTUAL_KEY, VK_ADD, VK_RETURN, VK_SHIFT, VK_SPACE, VK_SUBTRACT, VK_TAB,
+    VIRTUAL_KEY, VK_ADD, VK_DOWN, VK_END, VK_HOME, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
+    VK_SUBTRACT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
@@ -72,6 +74,8 @@ enum UiaEvent {
     Toggled(ToggleState, ToggleState),
     /// `BoundingRectangle` changed (DPI change moved the control in screen pixels).
     Bounds,
+    /// RangeValue `Value` property changed from the first value to the second.
+    Value(f64, f64),
 }
 
 thread_local! {
@@ -91,7 +95,7 @@ impl App {
             s.fill_round(rect(0.0, 0.0, w, h), 0.0, c.window);
         }
         self.panel.draw(s, t, &self.formats)?;
-        s.text(&self.status, &self.formats.body, rect(PAD, 200.0, PAD + 500.0, 224.0), t.text_secondary);
+        s.text(&self.status, &self.formats.body, rect(PAD, 236.0, PAD + 500.0, 260.0), t.text_secondary);
         s.end()
     }
 
@@ -141,6 +145,10 @@ impl App {
                     self.raise(index, UiaEvent::Toggled(old, new));
                 }
                 Event::Focused(i) => self.raise(i, UiaEvent::Event(UIA_AutomationFocusChangedEventId)),
+                Event::ValueChanged { index, old, new } => {
+                    self.status = format!("{}: {new}", self.panel.controls[index].name());
+                    self.raise(index, UiaEvent::Value(old, new));
+                }
             }
         }
         if out.redraw {
@@ -165,6 +173,12 @@ impl App {
             VK_RETURN => Key::Enter,
             VK_ADD => Key::Add,
             VK_SUBTRACT => Key::Subtract,
+            VK_LEFT => Key::Left,
+            VK_RIGHT => Key::Right,
+            VK_UP => Key::Up,
+            VK_DOWN => Key::Down,
+            VK_HOME => Key::Home,
+            VK_END => Key::End,
             _ => Key::Other,
         };
         let out = self.panel.key(key, down);
@@ -197,6 +211,10 @@ fn try_with_app(f: impl FnOnce(&mut App) -> Result<()>) -> bool {
                 UiaEvent::Bounds => uia::bounds_variant(&model, i).and_then(|new| unsafe {
                     UiaRaiseAutomationPropertyChangedEvent(&provider, UIA_BoundingRectanglePropertyId, &VARIANT::default(), &new)
                 }),
+                UiaEvent::Value(old, new) => unsafe {
+                    let (old, new) = (VARIANT::from(old), VARIANT::from(new));
+                    UiaRaiseAutomationPropertyChangedEvent(&provider, UIA_RangeValueValuePropertyId, &old, &new)
+                },
             };
             if let Err(e) = raised {
                 eprintln!("fluent-win buttons: UIA event: {e}");
@@ -213,8 +231,13 @@ fn with_app(f: impl FnOnce(&mut App) -> Result<()>) {
 
 /// Re-posts a WM_UIA_* message that arrived while the app was busy, so it is not lost.
 fn with_app_or_repost(hwnd: HWND, msg: u32, wp: WPARAM, f: impl FnOnce(&mut App) -> Result<()>) {
+    with_app_or_repost_lp(hwnd, msg, wp, LPARAM(0), f);
+}
+
+/// [`with_app_or_repost`] keeping `lParam` (WM_UIA_SET_VALUE carries the value there).
+fn with_app_or_repost_lp(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, f: impl FnOnce(&mut App) -> Result<()>) {
     if !try_with_app(f) {
-        unsafe { _ = PostMessageW(Some(hwnd), msg, wp, LPARAM(0)) };
+        unsafe { _ = PostMessageW(Some(hwnd), msg, wp, lp) };
     }
 }
 
@@ -321,6 +344,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             let out = a.panel.invoke(wp.0);
             a.apply(out)
         }),
+        // Posted by IRangeValueProvider::SetValue (the provider already validated the range).
+        WM_UIA_SET_VALUE => with_app_or_repost_lp(hwnd, msg, wp, lp, |a| {
+            let out = a.panel.set_value(wp.0, uia::set_value_of(lp));
+            a.apply(out)
+        }),
         // Posted by IRawElementProviderFragment::SetFocus (UIA already focused the window).
         WM_UIA_FOCUS => with_app_or_repost(hwnd, msg, wp, |a| {
             // Only when the window really has keyboard focus; otherwise keys go elsewhere
@@ -394,6 +422,9 @@ fn controls(surface: &Surface, f: &Formats) -> Result<Vec<Box<dyn Control>>> {
         }));
         x += cw + GAP;
     }
+    // Fourth row: a Slider (Quick Settings volume).
+    let top = cy + 20.0 + GAP;
+    controls.push(Box::new(Slider::new("Volume", rect(PAD, top, PAD + 240.0, top + slider::HEIGHT), 0.0, 100.0, 40.0)));
     Ok(controls)
 }
 
@@ -416,7 +447,7 @@ fn main() -> Result<()> {
         let k = GetDpiForSystem() as f32 / 96.0;
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Button"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
-            (520.0 * k) as i32, (300.0 * k) as i32, None, None, Some(instance.into()), None)?;
+            (520.0 * k) as i32, (330.0 * k) as i32, None, None, Some(instance.into()), None)?;
 
         let theme = Theme::system();
         if let Err(e) = backdrop::apply(hwnd, DWMSBT_MAINWINDOW, DWMWCP_ROUND, theme.dark) {

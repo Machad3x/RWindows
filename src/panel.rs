@@ -8,8 +8,9 @@ use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 use windows::Win32::UI::Accessibility::{
     ToggleState, ToggleState_Indeterminate, ToggleState_Off, ToggleState_On, UIA_ButtonControlTypeId,
-    UIA_CONTROLTYPE_ID, UIA_CheckBoxControlTypeId,
+    UIA_CONTROLTYPE_ID, UIA_CheckBoxControlTypeId, UIA_SliderControlTypeId,
 };
+use crate::slider::Slider;
 use windows::core::Result;
 
 use crate::button::{Button, FocusKind, Input, Key, Response, Visual};
@@ -68,6 +69,54 @@ pub trait Control {
     /// UI Automation `ControlType`.
     fn control_type(&self) -> UIA_CONTROLTYPE_ID {
         UIA_ButtonControlTypeId
+    }
+    /// RangeValue data for range controls (Slider); `None` otherwise.
+    fn range(&self) -> Option<uia::Range> {
+        None
+    }
+    /// Sets the value of a range control (UIA `SetValue`); ignored by others.
+    fn set_value(&mut self, _value: f64) -> Response {
+        Response::default()
+    }
+}
+
+impl Control for Slider {
+    fn handle(&mut self, input: Input) -> Response {
+        Slider::handle(self, input)
+    }
+    /// Sliders have no Invoke.
+    fn invoke(&mut self) -> Response {
+        Response::default()
+    }
+    fn draw(&self, s: &Surface, t: &Theme, _f: &Formats) -> Result<()> {
+        Slider::draw(self, s, t)
+    }
+    fn animating(&self) -> bool {
+        Slider::animating(self)
+    }
+    fn is_captured(&self) -> bool {
+        Slider::is_captured(self)
+    }
+    fn enabled(&self) -> bool {
+        self.visual() != Visual::Disabled
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn rect(&self) -> D2D_RECT_F {
+        self.rect
+    }
+    /// `SliderAutomationPeer` reports Slider.
+    fn control_type(&self) -> UIA_CONTROLTYPE_ID {
+        UIA_SliderControlTypeId
+    }
+    fn range(&self) -> Option<uia::Range> {
+        let (minimum, maximum, small_change) = Slider::range(self);
+        // RangeBase.LargeChange default (no PageUp/PageDown on Slider, UIA still reports it).
+        Some(uia::Range { value: self.value(), minimum, maximum, small_change, large_change: 10.0 })
+    }
+    fn set_value(&mut self, value: f64) -> Response {
+        Slider::set_value(self, value)
     }
 }
 
@@ -190,6 +239,15 @@ pub enum Event {
     },
     /// Keyboard focus moved to a control: raise `UIA_AutomationFocusChangedEventId`.
     Focused(usize),
+    /// A range control's value changed: raise the RangeValue `Value` property change.
+    ValueChanged {
+        /// Control index.
+        index: usize,
+        /// Value before.
+        old: f64,
+        /// Value after.
+        new: f64,
+    },
 }
 
 /// What the window must do after a [`Panel`] call.
@@ -237,15 +295,21 @@ impl Panel {
             _ => (0..self.controls.len()).collect(),
         };
         for i in targets {
-            let before = self.controls[i].toggle_state();
+            let before = self.state(i);
             let r = self.controls[i].handle(input);
             self.apply(i, before, r, &mut out);
         }
         out
     }
 
-    /// Applies one control's [`Response`]: capture, focus moves and click events.
-    fn apply(&mut self, i: usize, before: Option<ToggleState>, r: Response, out: &mut Outcome) {
+    /// Toggle state and range value of control `i`, to diff after a call.
+    fn state(&self, i: usize) -> (Option<ToggleState>, Option<f64>) {
+        let c = &self.controls[i];
+        (c.toggle_state(), c.range().map(|r| r.value))
+    }
+
+    /// Applies one control's [`Response`]: capture, focus moves, click and value events.
+    fn apply(&mut self, i: usize, (before, value): (Option<ToggleState>, Option<f64>), r: Response, out: &mut Outcome) {
         if r.capture.is_some() {
             out.capture = r.capture;
         }
@@ -262,6 +326,12 @@ impl Panel {
                 (Some(old), Some(new)) => Event::Toggled { index: i, old, new },
                 _ => Event::Invoked(i),
             });
+        }
+        if let (Some(old), Some(new)) = (value, self.controls[i].range().map(|r| r.value))
+            && old != new
+        {
+            out.redraw = true;
+            out.events.push(Event::ValueChanged { index: i, old, new });
         }
     }
 
@@ -319,9 +389,20 @@ impl Panel {
     /// it while disabled.
     pub fn invoke(&mut self, index: usize) -> Outcome {
         let mut out = Outcome::default();
-        if let Some(c) = self.controls.get_mut(index) {
-            let before = c.toggle_state();
-            let r = c.invoke();
+        if index < self.controls.len() {
+            let before = self.state(index);
+            let r = self.controls[index].invoke();
+            self.apply(index, before, r, &mut out);
+        }
+        out
+    }
+
+    /// Sets the value of range control `index` (UIA `SetValue`).
+    pub fn set_value(&mut self, index: usize, value: f64) -> Outcome {
+        let mut out = Outcome::default();
+        if index < self.controls.len() {
+            let before = self.state(index);
+            let r = self.controls[index].set_value(value);
             self.apply(index, before, r, &mut out);
         }
         out
@@ -345,6 +426,7 @@ impl Panel {
             enabled: c.enabled(),
             toggle: c.toggle_state(),
             control_type: c.control_type(),
+            range: c.range(),
         }).collect()
     }
 }
@@ -464,6 +546,43 @@ mod tests {
     fn invoke_on_a_disabled_control_should_do_nothing() {
         let mut p = panel();
         assert_eq!(p.invoke(2), Outcome::default());
+    }
+
+    fn with_slider() -> Panel {
+        let mut p = panel();
+        p.controls.push(Box::new(Slider::new("Volume", rect(500.0, 0.0, 718.0, 32.0), 0.0, 100.0, 40.0)));
+        p
+    }
+
+    #[test]
+    fn arrow_on_a_focused_slider_should_report_the_value_change() {
+        let mut p = with_slider();
+        p.focus(Some(4), FocusKind::Keyboard);
+        let o = p.key(Key::Right, true);
+        assert_eq!(o.events, vec![Event::ValueChanged { index: 4, old: 40.0, new: 41.0 }]);
+    }
+
+    #[test]
+    fn dragging_a_slider_should_report_each_value_change() {
+        let mut p = with_slider();
+        // Track press at 50% (x = 500 + 9 + 100).
+        let o = p.handle(Input::PointerDown(609.0, 16.0));
+        assert!(o.events.contains(&Event::ValueChanged { index: 4, old: 40.0, new: 50.0 }));
+    }
+
+    #[test]
+    fn set_value_should_report_the_change() {
+        let mut p = with_slider();
+        let o = p.set_value(4, 75.0);
+        assert_eq!((o.events, o.redraw), (vec![Event::ValueChanged { index: 4, old: 40.0, new: 75.0 }], true));
+    }
+
+    #[test]
+    fn slider_uia_item_should_carry_its_range() {
+        let items = with_slider().uia_items();
+        let r = items[4].range.unwrap();
+        assert_eq!((items[4].control_type, r.value, r.minimum, r.maximum, r.small_change, r.large_change),
+            (UIA_SliderControlTypeId, 40.0, 0.0, 100.0, 1.0, 10.0));
     }
 
     #[test]
