@@ -20,7 +20,7 @@ use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::System::Com::SAFEARRAY;
 use windows::Win32::System::Ole::{SafeArrayCreateVector, SafeArrayPutElement};
-use windows::Win32::System::Variant::{VARIANT, VT_I4};
+use windows::Win32::System::Variant::{VARIANT, VT_ARRAY, VT_I4, VT_R8};
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use windows::core::{Error, HRESULT, IUnknown, IUnknownImpl, Interface, Result, implement};
@@ -76,6 +76,30 @@ pub fn root(model: &Shared) -> IRawElementProviderSimple {
 /// Provider of control `index` (for raising events on it).
 pub fn item(model: &Shared, index: usize) -> IRawElementProviderSimple {
     ItemProvider { model: model.clone(), index }.into()
+}
+
+/// `BoundingRectangle` of control `index` as the property value UIA expects
+/// (`VT_ARRAY | VT_R8`: left, top, width, height in screen pixels), for
+/// `UiaRaiseAutomationPropertyChangedEvent` after a DPI change moves it.
+pub fn bounds_variant(model: &Shared, index: usize) -> Result<VARIANT> {
+    let fragment: IRawElementProviderFragment = ItemProvider { model: model.clone(), index }.into();
+    let r = unsafe { fragment.BoundingRectangle()? };
+    let parts = [r.left, r.top, r.width, r.height];
+    let mut v = VARIANT::default();
+    unsafe {
+        let sa = SafeArrayCreateVector(VT_R8, 0, parts.len() as u32);
+        if sa.is_null() {
+            return Err(Error::from(E_OUTOFMEMORY));
+        }
+        // Owned by the VARIANT from here: its Drop (VariantClear) destroys the array.
+        let inner = &mut *v.Anonymous.Anonymous;
+        inner.vt = VT_ARRAY | VT_R8;
+        inner.Anonymous.parray = sa;
+        for (i, x) in (0i32..).zip(parts) {
+            SafeArrayPutElement(sa, &i, (&raw const x).cast())?;
+        }
+    }
+    Ok(v)
 }
 
 #[implement(IRawElementProviderSimple, IRawElementProviderFragment, IRawElementProviderFragmentRoot)]
@@ -449,6 +473,26 @@ mod tests {
         let m = model(1.5);
         let r = unsafe { fragment(&item(&m, 1)).BoundingRectangle().unwrap() };
         assert_eq!((r.left, r.top, r.width, r.height), (180.0, 15.0, 90.0, 48.0));
+    }
+
+    #[test]
+    fn bounds_variant_should_hold_the_screen_rectangle_as_four_doubles() {
+        use windows::Win32::System::Ole::{SafeArrayGetElement, SafeArrayGetUBound};
+        use windows::Win32::System::Variant::{VT_ARRAY, VT_R8};
+        let m = model(1.5);
+        let v = bounds_variant(&m, 1).unwrap();
+        let values: Vec<f64> = unsafe {
+            let inner = &v.Anonymous.Anonymous;
+            assert_eq!(inner.vt, VT_ARRAY | VT_R8);
+            let sa = inner.Anonymous.parray;
+            let upper = SafeArrayGetUBound(sa, 1).unwrap();
+            (0..=upper).map(|i| {
+                let mut x = 0f64;
+                SafeArrayGetElement(sa, &i, (&raw mut x).cast()).unwrap();
+                x
+            }).collect()
+        };
+        assert_eq!(values, [180.0, 15.0, 90.0, 48.0]);
     }
 
     #[test]

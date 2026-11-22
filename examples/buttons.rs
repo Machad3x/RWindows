@@ -25,7 +25,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     IRawElementProviderSimple, ToggleState, ToggleState_Indeterminate, ToggleState_Off, ToggleState_On,
-    UIA_AutomationFocusChangedEventId, UIA_EVENT_ID,
+    UIA_AutomationFocusChangedEventId, UIA_BoundingRectanglePropertyId, UIA_EVENT_ID,
     UIA_ButtonControlTypeId, UIA_CONTROLTYPE_ID, UIA_CheckBoxControlTypeId, UIA_Invoke_InvokedEventId, UIA_ToggleToggleStatePropertyId, UiaRaiseAutomationPropertyChangedEvent,
     UiaClientsAreListening, UiaRaiseAutomationEvent, UiaReturnRawElementProvider, UiaRootObjectId,
 };
@@ -182,6 +182,8 @@ enum UiaEvent {
     Event(UIA_EVENT_ID),
     /// `ToggleState` property changed from the first value to the second.
     Toggled(ToggleState, ToggleState),
+    /// `BoundingRectangle` changed (DPI change moved the control in screen pixels).
+    Bounds,
 }
 
 thread_local! {
@@ -378,6 +380,10 @@ fn try_with_app(f: impl FnOnce(&mut App) -> Result<()>) -> bool {
                     let (old, new) = (VARIANT::from(old.0), VARIANT::from(new.0));
                     UiaRaiseAutomationPropertyChangedEvent(&provider, UIA_ToggleToggleStatePropertyId, &old, &new)
                 },
+                // The old pixel rectangle is not tracked: VT_EMPTY.
+                UiaEvent::Bounds => uia::bounds_variant(&model, i).and_then(|new| unsafe {
+                    UiaRaiseAutomationPropertyChangedEvent(&provider, UIA_BoundingRectanglePropertyId, &VARIANT::default(), &new)
+                }),
             };
             if let Err(e) = raised {
                 eprintln!("fluent-win buttons: UIA event: {e}");
@@ -469,6 +475,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 _ = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top,
                     SWP_NOZORDER | SWP_NOACTIVATE);
             }
+            // Every control now has a new BoundingRectangle in screen pixels.
+            with_app(|a| {
+                (0..a.buttons.len()).for_each(|i| a.raise(i, UiaEvent::Bounds));
+                Ok(())
+            });
         }
         // Theme or accent changed (ImmersiveColorSet), high contrast toggled
         // (SPI_SETHIGHCONTRAST), or system colors changed (WM_SYSCOLORCHANGE, Learn:

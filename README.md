@@ -226,7 +226,7 @@ Verificado com um listener C# sobre `System.Windows.Automation`: chegam os event
 
 Observado e sem documentação: o cliente .NET chama `SetFocus` no botão antes do `Invoke`, então o foco vai para o botão invocado. O provider obedece o pedido. Não está confirmado se quem pede é o cliente gerenciado ou o UIA core.
 
-Pendente: evento `IsEnabled` alterado (o exemplo não muda isso em tempo de execução), evento de `BoundingRectangle` ao redimensionar e teste com Narrador e NVDA.
+Eventos de propriedade: `ToggleState` (antigo → novo) e `BoundingRectangle` depois de `WM_DPICHANGED` (o retângulo em pixels de tela muda; `uia::bounds_variant` monta o `VT_ARRAY | VT_R8` com left, top, width, height; valor antigo `VT_EMPTY`, porque o retângulo anterior não é guardado). Mover ou redimensionar a janela não dispara nada: o layout é fixo em DIPs. `IsEnabled` não tem evento porque o exemplo não muda isso em tempo de execução; quem mudar deve disparar `UIA_IsEnabledPropertyId`. Não verificado: o evento de `BoundingRectangle` (não dá para simular `WM_DPICHANGED` de fora do processo) e teste com Narrador e NVDA.
 
 ## Tipografia
 
