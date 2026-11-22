@@ -3,7 +3,22 @@
 //! Input rules follow WinUI's `ButtonBase` with the default `ClickMode.Release`
 //! (`ButtonBase_Partial.cpp`, `ButtonBaseKeyProcess.h`).
 
-use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
+use windows::Win32::Graphics::DirectWrite::{
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, IDWriteTextFormat,
+};
+use windows::core::Result;
+
+use crate::easing::{self, Tween};
+use crate::gfx::{Edge, Surface, rect};
+use crate::theme::{self, Theme, with_opacity};
+
+/// `ButtonPadding` = 11,5,11,6 (left, top, right, bottom).
+const PADDING: (f32, f32, f32, f32) = (11.0, 5.0, 11.0, 6.0);
+/// `ButtonBorderThemeThickness`.
+const BORDER: f32 = 1.0;
+/// `FocusVisualMargin` = -3 on `DefaultButtonStyle`.
+const FOCUS_MARGIN: f32 = 3.0;
 
 /// Keys a button reacts to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +87,35 @@ pub struct Response {
     pub take_focus: bool,
 }
 
+/// Border of one visual state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Border {
+    /// `ControlElevationBorderBrush`-style gradient: lit/shaded `edge`, then `rest`.
+    Elevation {
+        /// Edge carrying `edge_color`.
+        edge: Edge,
+        /// Color at the edge (stop 0.33).
+        edge_color: D2D1_COLOR_F,
+        /// Color everywhere else (stop 1.0).
+        rest: D2D1_COLOR_F,
+    },
+    /// Solid 1-DIP border.
+    Solid(D2D1_COLOR_F),
+    /// No border (`ControlFillColorTransparentBrush`).
+    None,
+}
+
+/// Brushes of one visual state (`Button_themeresources.xaml`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Style {
+    /// `ButtonBackground*` / `AccentButtonBackground*`.
+    pub background: D2D1_COLOR_F,
+    /// `ButtonForeground*` / `AccentButtonForeground*`.
+    pub foreground: D2D1_COLOR_F,
+    /// `ButtonBorderBrush*` / `AccentButtonBorderBrush*`.
+    pub border: Border,
+}
+
 /// A push button.
 #[derive(Clone, Debug)]
 pub struct Button {
@@ -89,6 +133,9 @@ pub struct Button {
     /// `m_bIsSpaceOrEnterKeyDown`.
     key_down: bool,
     focus: Option<FocusKind>,
+    /// Visual the background is transitioning from (`BackgroundTransition`).
+    bg_from: Visual,
+    bg: Tween,
 }
 
 /// `ButtonBase::IsValidPointerPosition` tolerance, in DIPs.
@@ -107,7 +154,28 @@ impl Button {
             left_down: false,
             key_down: false,
             focus: None,
+            bg_from: Visual::Rest,
+            bg: Tween::idle(1.0),
         }
+    }
+
+    /// Body text format centered like `HorizontalContentAlignment`/`VerticalContentAlignment=Center`.
+    pub fn text_format(surface: &Surface) -> Result<IDWriteTextFormat> {
+        let format = surface.format(&theme::BODY)?;
+        unsafe {
+            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        }
+        Ok(format)
+    }
+
+    /// Auto size for `label`: text + padding + border, rounded to whole DIPs
+    /// like XAML layout rounding at 100% scale.
+    pub fn desired_size(surface: &Surface, format: &IDWriteTextFormat, label: &str) -> Result<(f32, f32)> {
+        let (w, h) = surface.measure(label, format)?;
+        let width = w + PADDING.0 + PADDING.2 + 2.0 * BORDER;
+        let height = h + PADDING.1 + PADDING.3 + 2.0 * BORDER;
+        Ok((width.ceil(), height.round()))
     }
 
     /// Current visual state.
@@ -201,6 +269,52 @@ impl Button {
         Response { clicked: r.clicked, capture: r.capture, take_focus: r.take_focus, ..self.changed(before) }
     }
 
+    /// Target brushes for the current visual state.
+    pub fn style(&self, t: &Theme) -> Style {
+        style_of(self.visual(), self.accent, t)
+    }
+
+    /// True while the 83 ms background transition runs.
+    pub fn animating(&self) -> bool {
+        self.bg.running()
+    }
+
+    /// Draws the button (and the focus rectangle when keyboard-focused).
+    pub fn draw(&self, s: &Surface, t: &Theme, format: &IDWriteTextFormat) -> Result<()> {
+        let style = self.style(t);
+        let from = style_of(self.bg_from, self.accent, t).background;
+        let background = lerp(from, style.background, self.bg.value());
+        let radius = theme::CONTROL_RADIUS;
+        let r = self.rect;
+        if self.accent {
+            // AccentButtonStyle: BackgroundSizing=OuterBorderEdge.
+            s.fill_round(r, radius, background);
+        } else {
+            // DefaultButtonStyle: BackgroundSizing=InnerBorderEdge.
+            s.fill_round(inset(r, BORDER), radius - BORDER, background);
+        }
+        match style.border {
+            Border::Elevation { edge, edge_color, rest } => s.stroke_elevation(r, radius, edge, edge_color, rest)?,
+            Border::Solid(color) => s.stroke_round(r, radius, BORDER, color),
+            Border::None => {}
+        }
+        let content = rect(
+            r.left + BORDER + PADDING.0,
+            r.top + BORDER + PADDING.1,
+            r.right - BORDER - PADDING.2,
+            r.bottom - BORDER - PADDING.3,
+        );
+        s.text(&self.label, format, content, style.foreground);
+        if self.focus_visible() {
+            // FocusRectManager: outer ring at -FocusVisualMargin, 2 DIPs, radius + 3;
+            // inner ring inset by the outer thickness, 1 DIP, radius reduced by 2.
+            let outer = inset(r, -FOCUS_MARGIN);
+            s.stroke_round(outer, radius + FOCUS_MARGIN, 2.0, t.focus_outer);
+            s.stroke_round(inset(outer, 2.0), radius + FOCUS_MARGIN - 2.0, 1.0, t.focus_inner);
+        }
+        Ok(())
+    }
+
     fn contains(&self, x: f32, y: f32, tolerance: f32) -> bool {
         let r = self.rect;
         x >= r.left - tolerance && x <= r.right + tolerance && y >= r.top - tolerance && y <= r.bottom + tolerance
@@ -210,9 +324,46 @@ impl Button {
         (self.visual(), self.focus_visible())
     }
 
-    fn changed(&self, before: (Visual, bool)) -> Response {
+    fn changed(&mut self, before: (Visual, bool)) -> Response {
+        if self.visual() != before.0 {
+            // BrushTransition Duration=0:0:0.083 on the background only.
+            // shortcut: a change mid-transition restarts from the previous state's color, not the blended one (<83 ms); track the drawn color if it shows.
+            self.bg_from = before.0;
+            self.bg = Tween::idle(0.0);
+            self.bg.retarget(1.0, easing::FASTER, easing::LINEAR);
+        }
         Response { redraw: self.snapshot() != before, ..Response::default() }
     }
+}
+
+fn style_of(visual: Visual, accent: bool, t: &Theme) -> Style {
+    let elevation = |edge, edge_color, rest| Border::Elevation { edge, edge_color, rest };
+    let default_edge = if t.dark { Edge::Top } else { Edge::Bottom };
+    match (accent, visual) {
+        (false, Visual::Rest | Visual::PointerOver) => Style {
+            background: if visual == Visual::Rest { t.control_fill } else { t.control_fill_hover },
+            foreground: t.text_primary,
+            border: elevation(default_edge, t.stroke_secondary, t.stroke),
+        },
+        (false, Visual::Pressed) => Style { background: t.control_fill_pressed, foreground: t.text_secondary, border: Border::Solid(t.stroke) },
+        (false, Visual::Disabled) => Style { background: t.control_fill_disabled, foreground: t.text_disabled, border: Border::Solid(t.stroke) },
+        (true, Visual::Rest | Visual::PointerOver) => Style {
+            background: if visual == Visual::Rest { t.accent } else { with_opacity(t.accent, 0.9) },
+            foreground: t.text_on_accent,
+            border: elevation(Edge::Bottom, t.stroke_on_accent_secondary, t.stroke_on_accent),
+        },
+        (true, Visual::Pressed) => Style { background: with_opacity(t.accent, 0.8), foreground: t.text_on_accent_secondary, border: Border::None },
+        (true, Visual::Disabled) => Style { background: t.accent_disabled, foreground: t.text_on_accent_disabled, border: Border::None },
+    }
+}
+
+fn lerp(a: D2D1_COLOR_F, b: D2D1_COLOR_F, k: f32) -> D2D1_COLOR_F {
+    let m = |x: f32, y: f32| x + (y - x) * k;
+    D2D1_COLOR_F { r: m(a.r, b.r), g: m(a.g, b.g), b: m(a.b, b.b), a: m(a.a, b.a) }
+}
+
+fn inset(r: D2D_RECT_F, by: f32) -> D2D_RECT_F {
+    rect(r.left + by, r.top + by, r.right - by, r.bottom - by)
 }
 
 #[cfg(test)]
@@ -376,6 +527,60 @@ mod tests {
         let keyboard = focused(FocusKind::Keyboard).focus_visible();
         let pointer = focused(FocusKind::Pointer).focus_visible();
         assert_eq!((keyboard, pointer), (true, false));
+    }
+
+    fn pressed(accent: bool) -> Button {
+        let mut b = Button::new("Ok", rect(0.0, 0.0, 80.0, 32.0), accent);
+        b.handle(Input::PointerDown(INSIDE.0, INSIDE.1));
+        b
+    }
+
+    #[test]
+    fn default_rest_should_use_control_fill_and_top_elevation_in_dark() {
+        let s = button().style(&Theme::DARK);
+        let t = Theme::DARK;
+        let border = Border::Elevation { edge: Edge::Top, edge_color: t.stroke_secondary, rest: t.stroke };
+        assert_eq!((s.background, s.foreground, s.border), (t.control_fill, t.text_primary, border));
+    }
+
+    #[test]
+    fn default_elevation_should_sit_on_the_bottom_in_light() {
+        let s = button().style(&Theme::LIGHT);
+        assert!(matches!(s.border, Border::Elevation { edge: Edge::Bottom, .. }));
+    }
+
+    #[test]
+    fn default_pressed_should_use_tertiary_fill_secondary_text_and_solid_stroke() {
+        let (s, t) = (pressed(false).style(&Theme::DARK), Theme::DARK);
+        assert_eq!((s.background, s.foreground, s.border), (t.control_fill_pressed, t.text_secondary, Border::Solid(t.stroke)));
+    }
+
+    #[test]
+    fn accent_pressed_should_use_accent_at_80_percent_and_no_border() {
+        let (s, t) = (pressed(true).style(&Theme::DARK), Theme::DARK);
+        let expected = crate::theme::with_opacity(t.accent, 0.8);
+        assert_eq!((s.background, s.foreground, s.border), (expected, t.text_on_accent_secondary, Border::None));
+    }
+
+    #[test]
+    fn accent_rest_elevation_should_be_flipped_in_both_themes() {
+        let dark = Button::new("Ok", rect(0.0, 0.0, 80.0, 32.0), true).style(&Theme::DARK);
+        assert!(matches!(dark.border, Border::Elevation { edge: Edge::Bottom, .. }));
+    }
+
+    #[test]
+    fn disabled_should_use_disabled_tokens() {
+        let mut b = button();
+        b.set_enabled(false);
+        let (s, t) = (b.style(&Theme::DARK), Theme::DARK);
+        assert_eq!((s.background, s.foreground), (t.control_fill_disabled, t.text_disabled));
+    }
+
+    #[test]
+    fn visual_change_should_start_the_background_transition() {
+        let mut b = button();
+        b.handle(Input::PointerMove(INSIDE.0, INSIDE.1));
+        assert!(b.animating());
     }
 
     #[test]

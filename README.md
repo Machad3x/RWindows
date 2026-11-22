@@ -71,6 +71,23 @@ Reproduz o `Button` do WinUI (`DefaultButtonStyle` e `AccentButtonStyle`). A ent
 | Perder o foco cancela o press e solta a captura. Desabilitar zera Pressed e PointerOver | `OnLostFocus`, `OnIsEnabledChanged` |
 | Anel de foco só com foco de teclado | [Keyboard interactions: focus visuals](https://learn.microsoft.com/windows/apps/develop/input/keyboard-interactions#focus-visuals) |
 
+Desenho (`Button::draw`):
+
+| Elemento | Valor | Fonte |
+|---|---|---|
+| Fundo padrão Rest/Over/Pressed/Disabled | `ControlFillColor` Default/Secondary/Tertiary/Disabled, dentro da borda (`BackgroundSizing=InnerBorderEdge`) | `Button_themeresources.xaml` |
+| Texto padrão | `TextFillColor` Primary/Primary/Secondary/Disabled | idem |
+| Borda padrão | Elevação (Rest/Over); `ControlStrokeColorDefault` sólida (Pressed/Disabled) | idem |
+| Fundo accent | Acento, acento×0.9, acento×0.8, `AccentFillColorDisabled`, sob a borda (`OuterBorderEdge`) | idem + `Common_themeresources_any.xaml` |
+| Texto/borda accent | `TextOnAccentFillColor*`; elevação invertida (Rest/Over), sem borda (Pressed/Disabled) | idem |
+| Transição | Só o fundo, 83 ms linear (`BrushTransition`) | idem |
+| Tamanho | Texto + padding `11,5,11,6` + borda 1, arredondado (altura 32 no Body) | `ButtonPadding`, `ButtonBorderThemeThickness` |
+| Anel de foco | Externo a 3 DIPs do botão, 2 DIPs, raio 7 (`FocusStrokeColorOuter`); interno 2 DIPs para dentro, 1 DIP, raio 5 (`FocusStrokeColorInner`) | `FocusRectManager.cpp` (`AdjustCornerRadius`) |
+
+Exemplo: `cargo run --release --example buttons` (Tab/Shift+Tab, Espaço/Enter, mouse com captura). Medido: 47.9 MB de working set, 0 ms de CPU parado em 3 s.
+
+Pendente: provider de UI Automation (leitores de tela), alto contraste, `AnimatedIcon`.
+
 Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As regras de press e release vêm do padrão confirmado em `OnPointerMoved` e `KeyUp`.
 
 ## Tipografia
@@ -108,6 +125,7 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 - [x] Line height do type ramp: resolvido seguindo o WinUI, que não força `LineHeight` (ver Tipografia)
 - [x] Acento e tema por API documentada (`UISettings`)
 - [x] Recuperar device perdido (reset de GPU, troca de driver, RDP)
+- [ ] Button: UI Automation (acessibilidade para leitor de tela) e alto contraste
 - [ ] Uma alocação UTF-16 por texto por frame
 - Fora do escopo: Mica no Win10/Win11 21H2 (a meta é o Win11 atual)
 
