@@ -1,0 +1,7 @@
+{
+  "env": {
+    "CAVECREW_INVESTIGATOR_MODEL": "haiku",
+    "CAVECREW_BUILDER_MODEL": "opus",
+    "CAVECREW_REVIEWER_MODEL": "opus"
+  }
+}
