@@ -59,6 +59,9 @@ pub enum Input {
     Focus(FocusKind),
     /// The button lost focus.
     Blur,
+    /// Someone else took the mouse capture (`WM_CAPTURECHANGED`), like
+    /// `OnPointerCaptureLost`: the press is abandoned without a click.
+    CaptureLost,
 }
 
 /// Visual state, in WinUI priority order.
@@ -178,6 +181,11 @@ impl Button {
         Ok((width.ceil(), height.round()))
     }
 
+    /// True while this button holds the mouse capture (left button pressed on it).
+    pub fn is_captured(&self) -> bool {
+        self.left_down
+    }
+
     /// Current visual state.
     pub fn visual(&self) -> Visual {
         if !self.enabled {
@@ -255,6 +263,11 @@ impl Button {
                 }
             }
             Input::Focus(kind) => self.focus = Some(kind),
+            Input::CaptureLost => {
+                // ReleasePointerCaptureInternal clears left-down; then IsPressed = false.
+                self.left_down = false;
+                self.pressed = false;
+            }
             Input::Blur => {
                 self.focus = None;
                 self.pressed = false;
@@ -520,6 +533,23 @@ mod tests {
         let r = b.handle(Input::Blur);
         let up = b.handle(Input::PointerUp(INSIDE.0, INSIDE.1));
         assert_eq!((r.capture, up.clicked, b.focus_visible()), (Some(false), false, false));
+    }
+
+    #[test]
+    fn press_should_hold_the_capture() {
+        let mut b = button();
+        b.handle(Input::PointerDown(INSIDE.0, INSIDE.1));
+        assert!(b.is_captured());
+    }
+
+    #[test]
+    fn capture_lost_should_abandon_the_press_without_click_or_release() {
+        let mut b = button();
+        b.handle(Input::PointerDown(INSIDE.0, INSIDE.1));
+        let lost = b.handle(Input::CaptureLost);
+        let up = b.handle(Input::PointerUp(INSIDE.0, INSIDE.1));
+        // Capture already belongs to someone else: nothing to release, no click.
+        assert_eq!((lost.capture, b.is_captured(), b.visual() == Visual::Pressed, up), (None, false, false, Response::default()));
     }
 
     #[test]
