@@ -15,8 +15,9 @@ use fluent_win::theme::Theme;
 use fluent_win::window_list::{self, ShellHook, WindowInfo};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
+use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint, ValidateRect,
+    ClientToScreen, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint, ValidateRect,
 };
 use windows::Win32::Globalization::{
     DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx, TIME_NOSECONDS,
@@ -31,13 +32,14 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Shell::ABN_POSCHANGED;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
-    GetWindowRect, GetWindowThreadProcessId, HSHELL_HIGHBIT, HSHELL_MONITORCHANGED, HSHELL_REDRAW,
-    HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW, IsIconic,
-    KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer,
-    SetWindowPos, ShowWindow, SW_MINIMIZE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER,
-    TranslateMessage, WM_APP, WM_DESTROY, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER,
-    WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP, WS_VISIBLE,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
+    GetMessageW, GetWindowRect, GetWindowThreadProcessId, HSHELL_HIGHBIT, HSHELL_MONITORCHANGED,
+    HSHELL_REDRAW, HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW,
+    IsIconic, KillTimer, LoadCursorW, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
+    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, SW_MINIMIZE, SW_RESTORE, SWP_NOACTIVATE,
+    SWP_NOZORDER, TPMPARAMS, TPM_RETURNCMD, TrackPopupMenuEx, TranslateMessage, WM_APP, WM_CLOSE,
+    WM_DESTROY, WM_LBUTTONDOWN, WM_PAINT, WM_RBUTTONDOWN, WM_TIMER, WNDCLASSW,
+    WS_EX_NOREDIRECTIONBITMAP, WS_POPUP, WS_VISIBLE, CW_USEDEFAULT,
 };
 use windows::core::{Result, w};
 
@@ -117,6 +119,45 @@ fn window_icon(surface: &Surface, hwnd: HWND) -> Option<windows::Win32::Graphics
     }
 }
 
+/// Window under a task-button x coordinate (DIPs from the bar's left edge).
+fn button_at(app: &App, x: f32) -> Option<HWND> {
+    let width = 160.0;
+    let gap = 8.0;
+    let index = ((x - 16.0) / (width + gap)) as isize;
+    if index < 0 || x - 16.0 - index as f32 * (width + gap) > width {
+        return None;
+    }
+    app.windows.get(index as usize).map(|info| info.hwnd)
+}
+
+/// Native context menu for a task button. Run outside the `APP` borrow because
+/// `TrackPopupMenuEx` pumps messages while it is open.
+fn context_menu(app_hwnd: HWND, x: f32, y: f32) {
+    let Some(target) = APP.with(|cell| {
+        cell.borrow().as_ref().and_then(|app| button_at(app, x))
+    }) else {
+        return;
+    };
+    unsafe {
+        let Ok(menu) = CreatePopupMenu() else { return };
+        _ = AppendMenuW(menu, MF_STRING, 1, w!("Restaurar"));
+        _ = AppendMenuW(menu, MF_STRING, 2, w!("Minimizar"));
+        _ = AppendMenuW(menu, MF_STRING, 3, w!("Fechar"));
+        let mut point = POINT { x: x as i32, y: y as i32 };
+        _ = ClientToScreen(app_hwnd, &mut point);
+        _ = SetForegroundWindow(app_hwnd);
+        let command = TrackPopupMenuEx(menu, TPM_RETURNCMD.0, point.x, point.y, app_hwnd,
+            None::<*const TPMPARAMS>);
+        _ = DestroyMenu(menu);
+        match command.0 {
+            1 => { _ = ShowWindow(target, SW_RESTORE); _ = SetForegroundWindow(target); }
+            2 => { _ = ShowWindow(target, SW_MINIMIZE); }
+            3 => { _ = PostMessageW(Some(target), WM_CLOSE, WPARAM(0), LPARAM(0)); }
+            _ => {}
+        }
+    }
+}
+
 impl App {
     /// Re-query the work area and place the bar; also called on ABN_POSCHANGED.
     fn reposition(&mut self) -> Result<()> {
@@ -178,14 +219,7 @@ impl App {
 
     /// Activates a task button, or minimizes the window when it is already active.
     fn activate_button(&mut self, x: f32) -> Result<()> {
-        let width = 160.0;
-        let gap = 8.0;
-        let index = ((x - 16.0) / (width + gap)) as isize;
-        let Some(info) = self.windows.get(index.max(0) as usize) else { return Ok(()) };
-        if index < 0 || x - 16.0 - index as f32 * (width + gap) > width {
-            return Ok(());
-        }
-        let hwnd = info.hwnd;
+        let Some(hwnd) = button_at(self, x) else { return Ok(()) };
         unsafe {
             if self.active == Some(hwnd) && !IsIconic(hwnd).as_bool() {
                 _ = ShowWindow(hwnd, SW_MINIMIZE);
@@ -256,6 +290,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             let k = a.surface.scale();
             a.activate_button((lp.0 & 0xffff) as f32 / k)
         }),
+        WM_RBUTTONDOWN => {
+            let k = APP.with(|cell| cell.borrow().as_ref().map_or(1.0, |a| a.surface.scale()));
+            context_menu(hwnd, (lp.0 & 0xffff) as f32 / k, ((lp.0 >> 16) & 0xffff) as f32 / k);
+            LRESULT(0)
+        }
         WM_TIMER if wp.0 == CLOCK_TIMER => with_app(App::render),
         WM_DESTROY => unsafe {
             _ = KillTimer(Some(hwnd), CLOCK_TIMER);

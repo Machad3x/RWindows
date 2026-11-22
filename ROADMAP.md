@@ -51,7 +51,7 @@ O shell precisa disto antes de existir. Ordem sugerida (cada item: TDD, README, 
 Modo de desenvolvimento **seguro**: o shell roda como um aplicativo comum, com o `explorer.exe` ainda vivo. Nada de registro nem de troca de shell ainda.
 
 - [x] Janela da barra como **appbar** (`SHAppBarMessage`: `ABM_NEW`, `ABM_QUERYPOS`, `ABM_SETPOS`, `ABM_REMOVE` no Drop), reservando a borda inferior; `examples/taskbar.rs` verificado (0,984,1920,1032 px) com data/hora do sistema. Falta tratar `ABN_POSCHANGED` de outros appbars e multi-monitor.
-- [x] **Lista de janelas**: `window_list::enumerate()` com `EnumWindows` + filtro (visíveis, sem dono, sem `WS_EX_TOOLWINDOW`/`WS_EX_NOACTIVATE`); `ShellHook` com `RegisterShellHookWindow` e mensagem `"SHELLHOOK"`, desregistrado no Drop. Botões com estado ativo e clique ativar/minimizar verificado no Windows real. Ícones reais por executável da janela verificados no Windows. Falta menu de contexto.
+- [x] **Lista de janelas**: `window_list::enumerate()` com `EnumWindows` + filtro (visíveis, sem dono, sem `WS_EX_TOOLWINDOW`/`WS_EX_NOACTIVATE`); `ShellHook` com `RegisterShellHookWindow` e mensagem `"SHELLHOOK"`, desregistrado no Drop. Botões com estado ativo e clique ativar/minimizar verificado no Windows real. Ícones reais por executável da janela verificados no Windows. Menu de contexto nativo (Restaurar/Minimizar/Fechar) verificado na tela. Falta menu Fluent desenhado pelo crate.
 - [ ] Botões de tarefa: ícone, estado ativo, piscar, ativar/minimizar/restaurar ao clicar, menu de contexto da janela.
 - [ ] Relógio e data, com formato do sistema.
 - [ ] Vários monitores e DPI por monitor.
