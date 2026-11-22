@@ -34,7 +34,7 @@ O shell precisa disto antes de existir. Ordem sugerida (cada item: TDD, README, 
 
 - [x] **Layout automático** (`layout::Stack`: empilhamento horizontal/vertical, `Spacing` e medida dos filhos). As fileiras de botões do exemplo já não são posicionadas à mão.
 - [x] **MenuFlyout** (`menu_flyout::MenuFlyout`): itens, separadores, atalho, habilitado/desabilitado, setas/Home/End/Espaço/Enter e clique com captura, no popup do `flyout`. Falta submenu, ícone, mnemonic, clique direito e UIA próprio.
-- [ ] **ToolTip**.
+- [x] **ToolTip** (`tooltip::ToolTip` + `tooltip::Host`): pincéis/tipografia do `DefaultToolTipStyle`, atraso e duração lidos de `SPI_GETMOUSEHOVERTIME`/`SPI_GETMESSAGEDURATION`, fade e posicionamento sobre o ponteiro. Falta offsets, conteúdo rico e UIA próprio; SafeZone (casco convexo) já incluído.
 - [ ] **ListView / GridView** (lista de apps do Iniciar, itens fixados), com virtualização.
 - [ ] **ScrollViewer** (rolagem por roda e barra).
 - [ ] **TextBox** (busca do Iniciar): cursor, seleção, área de transferência, IME, UIA Text/Value. É o item mais caro.

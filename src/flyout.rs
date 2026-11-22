@@ -157,6 +157,11 @@ impl Transition {
         Self { start: Instant::now(), opening: true, from, start_opacity: 0.0, at: (0.0, 0.0) }
     }
 
+    /// Opening with no slide, for a `ToolTip` (`FadeInThemeAnimation`).
+    pub fn fade() -> Self {
+        Self { start: Instant::now(), opening: true, from: (0.0, 0.0), start_opacity: 0.0, at: (0.0, 0.0) }
+    }
+
     /// Closing: a plain fade out.
     pub fn close() -> Self {
         Self::close_from(Frame { offset: (0.0, 0.0), opacity: 1.0, running: false })
@@ -179,7 +184,8 @@ impl Transition {
         let (slide, curve) = SHOW_SLIDE;
         let left = ENTRANCE_OFFSET * (1.0 - curve.ease(ratio(elapsed, slide)));
         let offset = (self.from.0 * left, self.from.1 * left);
-        Frame { offset, opacity, running: elapsed < slide.max(delay + fade) }
+        let end = if self.from == (0.0, 0.0) { delay + fade } else { slide.max(delay + fade) };
+        Frame { offset, opacity, running: elapsed < end }
     }
 
     /// The current frame.

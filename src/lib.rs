@@ -21,4 +21,5 @@ pub mod panel;
 pub mod slider;
 pub mod theme;
 pub mod toggle_switch;
+pub mod tooltip;
 pub mod uia;

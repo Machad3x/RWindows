@@ -284,6 +284,18 @@ impl Surface {
         Ok((m.widthIncludingTrailingWhitespace, m.height))
     }
 
+    /// Size of `text` wrapped into at most `max_width` DIPs (width, height).
+    pub fn measure_wrapped(&self, text: &str, format: &IDWriteTextFormat, max_width: f32) -> Result<(f32, f32)> {
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe {
+            let layout = with_wide(text, |wide| self.dwrite.CreateTextLayout(wide, format, max_width, f32::MAX))?;
+            layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+            layout.GetMetrics(&mut m)?;
+        }
+        Ok((m.widthIncludingTrailingWhitespace, m.height))
+    }
+
     /// 1-DIP border with WinUI's `ControlElevationBorderBrush` shape: a linear
     /// gradient over the 3 DIPs next to `edge` (stops 0.33 = `edge_color`,
     /// 1.0 = `rest_color`), solid `rest_color` elsewhere.
@@ -459,6 +471,17 @@ mod tests {
         let (short, h) = surface.measure("Ok", &body).unwrap();
         let (long, _) = surface.measure("Configurações", &body).unwrap();
         assert!(short > 0.0 && long > short && (h - 18.62).abs() < 0.05, "{short} {long} {h}");
+    }
+
+    #[test]
+    fn measure_wrapped_should_wrap_a_long_text_into_more_than_one_line() {
+        let surface = Surface::new(hidden_window()).unwrap();
+        let caption = surface.format(&theme::CAPTION).unwrap();
+        let text = "Uma dica bem longa que precisa quebrar em mais de uma linha para caber";
+        let (one_line, h1) = surface.measure(text, &caption).unwrap();
+        let (width, h2) = surface.measure_wrapped(text, &caption, 100.0).unwrap();
+        assert!(one_line > 100.0);
+        assert!(width <= 101.0 && h2 > h1 * 1.5, "{width} {h1} {h2}");
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fluent_win::backdrop;
 use fluent_win::button::{Button, FocusKind, Input, Key};
@@ -21,8 +21,10 @@ use fluent_win::panel::{Control, Event, Formats, Outcome, Panel};
 use fluent_win::slider::{self, Slider};
 use fluent_win::theme::Theme;
 use fluent_win::toggle_switch::ToggleSwitch;
+use fluent_win::tooltip::{self, Action, Timing, ToolTip};
 use fluent_win::uia::{self, WM_UIA_FOCUS, WM_UIA_INVOKE, WM_UIA_SET_VALUE};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::{
     ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, ValidateRect,
@@ -44,7 +46,7 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
     VIRTUAL_KEY, VK_ADD, VK_DOWN, VK_END, VK_HOME, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
-    VK_ESCAPE, VK_SUBTRACT, VK_TAB, VK_UP,
+    VK_CONTROL, VK_ESCAPE, VK_SUBTRACT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
@@ -52,7 +54,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SPI_SETHIGHCONTRAST, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_CAPTURECHANGED,
     WM_DESTROY, WM_DPICHANGED, WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_QUIT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE,
-    WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW, WS_VISIBLE, DestroyWindow, SW_SHOW,
+    WM_TIMER, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TRANSPARENT,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE, DestroyWindow, SW_SHOW, KillTimer, SetTimer,
     SWP_NOSIZE, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_CLOSE, WM_NULL, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_POPUP,
 };
@@ -60,6 +63,10 @@ use windows::core::{PCWSTR, Result, w};
 
 const PAD: f32 = 32.0;
 const GAP: f32 = 8.0;
+/// Id of the single one-shot tooltip timer.
+const TIP_TIMER: usize = 1;
+/// Pointer placement rect half-size in DIPs.
+const TIP_POINT: f32 = 8.0;
 
 struct App {
     hwnd: HWND,
@@ -72,8 +79,16 @@ struct App {
     uia: uia::Shared,
     /// UIA events to raise once the APP borrow ends (see `with_app`).
     pending: Vec<(usize, UiaEvent)>,
-    /// The open "Mais opções" flyout, if any.
+    /// The open flyout, menu or tooltip, if any.
     popup: Option<Popup>,
+    /// `ToolTipService` state (delays come from this machine's system settings).
+    tip: tooltip::Host,
+    /// System delays, read once at startup instead of on every tooltip.
+    timing: Timing,
+    /// Armed one-shot timer, in milliseconds (None = no timer).
+    tip_timer: Option<u32>,
+    /// Pointer position in client DIPs, used as the tooltip's placement target.
+    tip_at: (f32, f32),
 }
 
 /// Label of the button that opens the flyout.
@@ -96,17 +111,27 @@ struct Popup {
     backdrop: bool,
 }
 
-/// What a popup hosts: a content flyout or a menu.
+/// What a popup hosts: a content flyout, a menu or a tooltip.
 enum Content {
     Panel(Panel),
     Menu(MenuFlyout),
+    Tip(ToolTip),
 }
 
 impl Content {
-    fn draw(&self, s: &Surface, t: &Theme, f: &Formats) -> Result<()> {
+    fn draw(&self, s: &Surface, style: &flyout::FlyoutStyle, size: (f32, f32), t: &Theme, f: &Formats) -> Result<()> {
         match self {
-            Content::Panel(p) => p.draw(s, t, f),
+            Content::Tip(tip) => {
+                // `DefaultToolTipStyle` uses the flyout brushes with `ControlCornerRadius`.
+                tip.draw(s, style, f, t);
+                Ok(())
+            }
+            Content::Panel(p) => {
+                flyout::draw_chrome(s, style, size);
+                p.draw(s, t, f)
+            }
             Content::Menu(m) => {
+                flyout::draw_chrome(s, style, size);
                 m.draw(s, t, f);
                 Ok(())
             }
@@ -116,7 +141,7 @@ impl Content {
     fn animating(&self) -> bool {
         match self {
             Content::Panel(p) => p.animating(),
-            Content::Menu(_) => false,
+            Content::Menu(_) | Content::Tip(_) => false,
         }
     }
 }
@@ -205,7 +230,14 @@ impl App {
                     self.status = format!("{}: {state}", self.panel.controls[index].name());
                     self.raise(index, UiaEvent::Toggled(old, new));
                 }
-                Event::Focused(i) => self.raise(i, UiaEvent::Event(UIA_AutomationFocusChangedEventId)),
+                Event::Focused(i) => {
+                    self.raise(i, UiaEvent::Event(UIA_AutomationFocusChangedEventId));
+                    // Keyboard focus also opens a tooltip (ToolTipService hooks GotFocus).
+                    let r = self.panel.controls[i].rect();
+                    self.tip_at = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+                    let action = self.tip.enter(i, Instant::now());
+                    self.tip_after(action)?;
+                }
                 Event::ValueChanged { index, old, new } => {
                     self.status = format!("{}: {new}", self.panel.controls[index].name());
                     self.raise(index, UiaEvent::Value(old, new));
@@ -231,7 +263,7 @@ impl App {
             (top + slider::HEIGHT + pb).clamp(flyout::HEIGHT_RANGE.0, flyout::HEIGHT_RANGE.1),
         );
         let content = Content::Panel(Panel::new(vec![Box::new(switch), Box::new(slider)]));
-        self.open_popup(anchor, content, size, w!("Mais opções"))
+        self.open_popup(anchor, content, size, w!("Mais opções"), false).map(|_| ())
     }
 
     /// Opens a `MenuFlyout` under control `anchor`, like `Button.Flyout`.
@@ -250,14 +282,129 @@ impl App {
         let sizes = entries.iter().map(|e| e.measure(&self.surface, &self.formats)).collect::<Result<Vec<_>>>()?;
         let menu = MenuFlyout::new(entries, &sizes);
         let size = menu.size();
-        self.open_popup(anchor, Content::Menu(menu), size, w!("Menu"))
+        self.open_popup(anchor, Content::Menu(menu), size, w!("Menu"), false).map(|_| ())
     }
 
-    /// Opens `content` in a popup window under control `anchor`
-    /// (`FlyoutPlacementMode.Bottom`).
-    fn open_popup(&mut self, anchor: usize, content: Content, size: (f32, f32), title: PCWSTR) -> Result<()> {
-        if self.popup.is_some() {
+    /// Tooltip text attached to a control, like `ToolTipService.ToolTip`.
+    fn tip_text(panel: &Panel, index: usize) -> Option<&'static str> {
+        Some(match panel.controls.get(index)?.name() {
+            "Configurações" => "Abre as configurações rápidas",
+            "Salvar" => "Salva o documento atual",
+            "Wi-Fi" => "Gerencia as conexões de rede",
+            MENU => "Mostra as ações disponíveis",
+            MORE => "Opções adicionais de configuração",
+            _ => return None,
+        })
+    }
+
+    /// Destroys a visible (or closing) tooltip popup without waiting for the fade.
+    fn destroy_tip_popup(&mut self) {
+        let hwnd = self.popup.as_ref()
+            .filter(|p| matches!(p.content, Content::Tip(_)))
+            .map(|p| p.hwnd);
+        if let Some(hwnd) = hwnd {
+            self.popup = None;
+            _ = unsafe { DestroyWindow(hwnd) };
+        }
+    }
+
+    /// Cancels a pending/open tooltip, e.g. when a click opens a flyout or menu.
+    fn cancel_tip(&mut self) {
+        unsafe { _ = KillTimer(Some(self.hwnd), TIP_TIMER) };
+        self.tip_timer = None;
+        self.destroy_tip_popup();
+        self.tip = tooltip::Host::new(self.timing);
+    }
+
+    fn open_tooltip(&mut self, owner: usize) -> Result<()> {
+        let Some(text) = Self::tip_text(&self.panel, owner) else { return Ok(()) };
+        // A flyout/menu owns the popup slot; a previous tooltip is replaced at once.
+        if self.popup.as_ref().is_some_and(|p| !matches!(p.content, Content::Tip(_))) {
             return Ok(());
+        }
+        self.destroy_tip_popup();
+        let tip = ToolTip::new(text, &self.surface, &self.formats.caption)?;
+        let size = tip.size;
+        let placed = self.open_popup(owner, Content::Tip(tip), size, w!("Dica"), true)?;
+        if let Some(t) = placed {
+            let r = self.panel.controls[owner].rect();
+            self.tip.set_bounds((r.left, r.top, r.right, r.bottom), (t.left, t.top, t.right, t.bottom));
+        }
+        Ok(())
+    }
+
+    fn tip_move(&mut self, x: f32, y: f32) -> Result<()> {
+        self.tip_at = (x, y);
+        let safe = self.tip.pointer(x, y, Instant::now());
+        let index = self.panel.controls.iter().position(|c| {
+            let r = c.rect();
+            x >= r.left && x < r.right && y >= r.top && y < r.bottom
+        });
+        // The safe zone wins: moving towards the tooltip must not re-enter or leave its owner.
+        let action = if safe.is_some() { safe } else if self.tip.is_in_safe_zone(x, y) { None } else {
+            match index {
+                Some(i) => self.tip.enter(i, Instant::now()),
+                None => self.tip.leave(Instant::now()),
+            }
+        };
+        self.tip_after(action)
+    }
+
+    fn tip_leave(&mut self) -> Result<()> {
+        // The tooltip is its own HWND: TME_LEAVE fires on the main window when it
+        // appears under the cursor. Keep the tooltip while the pointer is in the safe zone.
+        let (x, y) = self.tip_at;
+        if self.tip.is_in_safe_zone(x, y) {
+            return Ok(());
+        }
+        let action = self.tip.leave(Instant::now());
+        self.tip_after(action)
+    }
+
+    fn tip_dismiss(&mut self) -> Result<()> {
+        let action = self.tip.dismiss(Instant::now());
+        self.tip_after(action)
+    }
+
+    fn tip_tick(&mut self) -> Result<()> {
+        let action = self.tip.tick(Instant::now());
+        self.tip_after(action)
+    }
+
+    /// Applies a service action and schedules the next one-shot timer.
+    fn tip_after(&mut self, action: Option<Action>) -> Result<()> {
+        if let Some(action) = action {
+            match action {
+                Action::Open(owner) => self.open_tooltip(owner)?,
+                Action::Close if self.popup.as_ref().is_some_and(|p| matches!(p.content, Content::Tip(_))) => self.close_popup(),
+                Action::Close => {}
+            }
+        }
+        let delay = self.tip.next_delay(Instant::now());
+        let ms = (delay != Duration::MAX).then(|| delay.as_millis().min(u32::MAX as u128) as u32);
+        // Pointer moves keep arriving while the same delay is armed: re-arm only on change.
+        if ms != self.tip_timer {
+            unsafe {
+                match ms {
+                    Some(ms) => { SetTimer(Some(self.hwnd), TIP_TIMER, ms, None); }
+                    None => { _ = KillTimer(Some(self.hwnd), TIP_TIMER); }
+                }
+            }
+            self.tip_timer = ms;
+        }
+        Ok(())
+    }
+
+    /// Opens `content` in a popup window. A tooltip is placed above the pointer,
+    /// fades in and never takes focus; flyouts and menus open below `anchor`.
+    fn open_popup(&mut self, anchor: usize, content: Content, size: (f32, f32), title: PCWSTR, tip: bool) -> Result<Option<D2D_RECT_F>> {
+        if !tip {
+            // A tooltip opened by the focus event of this very click must give up
+            // the single popup slot before the flyout/menu is created.
+            self.cancel_tip();
+        }
+        if self.popup.is_some() {
+            return Ok(None);
         }
         // The anchor in screen pixels (main window scale), then everything in the DIPs
         // of the monitor under it: the popup is created there and draws at its DPI.
@@ -266,7 +413,13 @@ impl App {
         let mut o = POINT::default();
         unsafe { _ = ClientToScreen(self.hwnd, &mut o) };
         let px = |x: f32, origin: i32| origin + (x * km).round() as i32;
-        let anchor_px = RECT { left: px(a.left, o.x), top: px(a.top, o.y), right: px(a.right, o.x), bottom: px(a.bottom, o.y) };
+        let anchor_px = if tip {
+            // `ToolTipService` docks to the pointer (a small rect) for mouse input.
+            let (x, y) = self.tip_at;
+            RECT { left: px(x - TIP_POINT, o.x), top: px(y - TIP_POINT, o.y), right: px(x + TIP_POINT, o.x), bottom: px(y + TIP_POINT, o.y) }
+        } else {
+            RECT { left: px(a.left, o.x), top: px(a.top, o.y), right: px(a.right, o.x), bottom: px(a.bottom, o.y) }
+        };
         let (work, k) = unsafe {
             let monitor = MonitorFromRect(&anchor_px, MONITOR_DEFAULTTONEAREST);
             let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
@@ -278,31 +431,43 @@ impl App {
         let dips = |r: RECT| rect(r.left as f32 / k, r.top as f32 / k, r.right as f32 / k, r.bottom as f32 / k);
         let (target, container) = (dips(anchor_px), dips(work));
         let (w, h) = size;
-        let (r, placement) = flyout::place(target, w, h, container, flyout::Placement::Bottom);
+        let (r, placement) = flyout::place(target, w, h, container,
+            if tip { flyout::Placement::Top } else { flyout::Placement::Bottom });
         let origin = ((r.left * k).round() as i32, (r.top * k).round() as i32);
-        let transition = flyout::Transition::open(placement);
+        let transition = if tip { flyout::Transition::fade() } else { flyout::Transition::open(placement) };
         // Created at the first frame's position, so DWM never composes it at the final spot first.
         let start = transition.at(Duration::ZERO).offset;
         let (x0, y0) = (origin.0 + (start.0 * k).round() as i32, origin.1 + (start.1 * k).round() as i32);
+        let mut style = WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+        if tip {
+            // Click-through and no activation: a tooltip must not steal focus.
+            style |= WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
+        }
         let hwnd = unsafe {
-            CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST, w!("fluent-win-flyout"),
-                title, WS_POPUP, x0, y0, (w * k).round() as i32, (h * k).round() as i32,
-                Some(self.hwnd), None, None, None)?
+            CreateWindowExW(style, w!("fluent-win-flyout"), title, WS_POPUP, x0, y0,
+                (w * k).round() as i32, (h * k).round() as i32, Some(self.hwnd), None, None, None)?
         };
         let backdrop = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, self.theme.dark).is_ok();
         let surface = Surface::new(hwnd)?;
         self.popup = Some(Popup {
             hwnd, surface, content, size, origin, transition, closing: false, backdrop,
         });
-        // Keyboard focus moves into the popup; the WM_KILLFOCUS that ShowWindow sends
-        // the main window arrives while APP is borrowed and is skipped, so blur here.
-        let out = self.panel.focus(None, FocusKind::Keyboard);
-        if out.redraw {
-            self.render()?;
+        if !tip {
+            // Keyboard focus moves into the popup; the WM_KILLFOCUS that ShowWindow sends
+            // the main window arrives while APP is borrowed and is skipped, so blur here.
+            let out = self.panel.focus(None, FocusKind::Keyboard);
+            if out.redraw {
+                self.render()?;
+            }
         }
         self.frame_popup()?;
         unsafe { _ = ShowWindow(hwnd, SW_SHOW) };
-        Ok(())
+        // The final rect, in main-window client DIPs, feeds the tooltip safe zone.
+        Ok(tip.then(|| {
+            let (x, y) = (origin.0 - o.x, origin.1 - o.y);
+            let (right, bottom) = (x + (w * k).round() as i32, y + (h * k).round() as i32);
+            rect(x as f32 / km, y as f32 / km, right as f32 / km, bottom as f32 / km)
+        }))
     }
 
     /// Positions and draws the flyout for the current transition frame; destroys
@@ -321,10 +486,7 @@ impl App {
         let style = flyout::style(&self.theme, p.backdrop);
         let Popup { surface, content, size, .. } = p;
         surface.begin();
-        surface.with_opacity(f.opacity, |s| {
-            flyout::draw_chrome(s, &style, *size);
-            content.draw(s, &self.theme, &self.formats)
-        })?;
+        surface.with_opacity(f.opacity, |s| content.draw(s, &style, *size, &self.theme, &self.formats))?;
         surface.end()
     }
 
@@ -366,6 +528,8 @@ impl App {
                 let status = out.invoked.map(|i| format!("Clicou: {}", menu.text(i).unwrap_or_default()));
                 (out.capture, out.redraw, status, close)
             }
+            // Click-through: a tooltip never receives pointer or keyboard input.
+            Content::Tip(_) => (None, false, None, false),
         };
         match capture {
             Some(true) => unsafe { _ = SetCapture(p.hwnd) },
@@ -575,13 +739,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 a.tracking = true;
             }
             let (x, y) = point(a, lp);
-            a.input(Input::PointerMove(x, y))
+            a.input(Input::PointerMove(x, y))?;
+            a.tip_move(x, y)
         }),
         WM_MOUSELEAVE => with_app(|a| {
             a.tracking = false;
-            a.input(Input::PointerLeave)
+            a.input(Input::PointerLeave)?;
+            a.tip_leave()
         }),
         WM_LBUTTONDOWN => with_app(|a| {
+            a.cancel_tip();
             let (x, y) = point(a, lp);
             a.input(Input::PointerDown(x, y))
         }),
@@ -589,13 +756,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             let (x, y) = point(a, lp);
             a.input(Input::PointerUp(x, y))
         }),
+        // Ctrl dismisses a tooltip (Windows 11 21H2+).
+        WM_KEYDOWN if wp.0 as u16 == VK_CONTROL.0 => with_app(App::tip_dismiss),
         WM_KEYDOWN => with_app(|a| a.key(VIRTUAL_KEY(wp.0 as u16), true)),
         WM_KEYUP => with_app(|a| a.key(VIRTUAL_KEY(wp.0 as u16), false)),
         // Window lost focus: the focused control loses it too (OnLostFocus).
         WM_KILLFOCUS => with_app(|a| {
             let out = a.panel.focus(None, FocusKind::Keyboard);
-            a.apply(out)
+            a.apply(out)?;
+            a.tip_leave()
         }),
+        WM_TIMER if wp.0 == TIP_TIMER => with_app(App::tip_tick),
         // Another window took the capture: abandon any press (OnPointerCaptureLost).
         WM_CAPTURECHANGED if lp.0 != hwnd.0 as isize => with_app(|a| a.input(Input::CaptureLost)),
         WM_DPICHANGED => {
@@ -773,6 +944,7 @@ fn main() -> Result<()> {
         let surface = Surface::new(hwnd)?;
         let formats = Formats::new(&surface)?;
         let panel = Panel::new(controls(&surface, &formats)?);
+        let timing = Timing::system();
 
         let mut app = App {
             hwnd, surface, theme, formats, panel,
@@ -781,6 +953,10 @@ fn main() -> Result<()> {
             uia: Rc::new(RefCell::new(uia::Model::default())),
             pending: Vec::new(),
             popup: None,
+            timing,
+            tip: tooltip::Host::new(timing),
+            tip_timer: None,
+            tip_at: (0.0, 0.0),
         };
         UIA.with(|u| *u.borrow_mut() = Some(app.uia.clone()));
         app.render()?;

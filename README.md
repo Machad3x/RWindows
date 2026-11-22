@@ -39,6 +39,7 @@ surface.end()?;
 | `slider` | Slider horizontal |
 | `flyout` | Posicionamento, animação de abrir/fechar e aparência do Flyout |
 | `menu_flyout` | `MenuFlyoutPresenter` com itens, separadores, atalhos e navegação por teclado |
+| `tooltip` | `ToolTip` com atraso e duração do sistema, posicionamento sobre o ponteiro e fade |
 | `panel` | Roteamento comum: foco, captura, Tab, eventos (`trait Control`) |
 | `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, e eventos de propriedade |
 
@@ -282,6 +283,23 @@ Exemplo: o botão "Menu" abre um menu com Abrir, Fixar na barra de tarefas, sepa
 
 Limites: sem submenu, ícone, checkbox/radio, mnemonic, `MenuFlyout` de contexto ligado ao clique direito, seleção inicial ao abrir, Tab para fechar e provider UIA próprio (o mesmo limite do conteúdo do flyout). O padding do presenter é aplicado às posições dos itens; a borda e o fundo ainda vêm do `flyout::draw_chrome`, que cobre a janela inteira (`flyout::PADDING` só posiciona os filhos do flyout de conteúdo).
 
+## ToolTip
+
+`tooltip::ToolTip` mede e desenha o `DefaultToolTipStyle`; `tooltip::Host` reproduz os timers do `ToolTipService`. A janela é o mesmo popup do `flyout`, com `WS_EX_NOACTIVATE | WS_EX_TRANSPARENT` (não rouba foco, não recebe clique), transição de fade e posicionamento acima do ponteiro.
+
+| Regra | Fonte |
+|---|---|
+| Texto Caption 12, `TextFillColorPrimary`, padding 9,6,9,8, largura máxima 320, raio `ControlCornerRadius` 4, borda 1 de `SurfaceStrokeColorFlyout`, fundo `AcrylicInAppFillColorDefault` (o mesmo pincel do Flyout) | [`ToolTip_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/ToolTip_themeresources.xaml) |
+| Abrir: `FadeInThemeAnimation`; fechar: `FadeOutThemeAnimation` antes de destruir o popup | idem + `ToolTip_Partial.cpp` (`OnApplyTemplate`) |
+| Atraso do mouse = 2× `SPI_GETMOUSEHOVERTIME`; reshow (última dica há < 200 ms) = 1,5×; duração = `SPI_GETMESSAGEDURATION` segundos; fallbacks 400 ms e 5 s | [`ToolTipService_Partial.h`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/dxaml/xcp/dxaml/lib/ToolTipService_Partial.h), `ToolTipService_Partial.cpp` (`GetInitialShowDelay`, `OpenAutomaticToolTip`) |
+| Mouse e foco de teclado abrem a dica; sair do dono, perder o foco ou Ctrl fecham (Ctrl desde o Win11 21H2) | [`ToolTip` (Learn)](https://learn.microsoft.com/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.tooltip), `ToolTipService_Partial.cpp` (`CloseToolTipInternal`) |
+| Posicionamento padrão: acima e centralizado no ponteiro (com fallbacks de monitor); o app usa `flyout::place` com um retângulo de 16 DIPs em volta do cursor | Learn (`ToolTip.Placement`), `ToolTip_Partial.cpp` (`PerformPlacementWithWindowedPopup`) |
+| SafeZone: a dica fecha quando o ponteiro sai do dono, da dica ou do casco convexo dos dois; mover-se para a dica não a fecha, e o `WM_MOUSELEAVE` da janela principal é ignorado enquanto o ponteiro está na zona | `ToolTipService_Partial.cpp` (`IsToolTipInSafeZone`, `StartSafeZoneCheckTimer`) |
+
+`tooltip::Timing::system()` lê os dois parâmetros com `SystemParametersInfoW`, como o XAML, uma vez na inicialização. Nesta máquina (Windows 26H2) o valor real de `SPI_GETMOUSEHOVERTIME` é **10 ms** — não o fallback de 400 ms da documentação —, então a dica abre em 20 ms; `SPI_GETMESSAGEDURATION` é 5 s. O exemplo usa `SetTimer` de um tiro só por transição e só rearma quando o atraso muda (um `WM_MOUSEMOVE` não vira syscall), então o loop continua bloqueado em `GetMessageW` quando não há dica nem animação. O casco convexo do SafeZone é montado em arrays na stack, sem alocação por movimento.
+
+Exemplo: "Configurações", "Salvar", "Wi-Fi", "Mais opções" e "Menu" têm dicas. Verificado visualmente no Windows real: a dica aparece acima do botão "Salvar", com fundo acrílico, cantos arredondados, texto Caption 12 e padding corretos. Limite: a dica é posicionada na abertura e não segue o cursor depois disso (o XAML também reposiciona só em mudanças de layout), sem `PlacementRect`/offsets configuráveis, sem conteúdo rico, sem tooltip de atalho de teclado e sem provider UIA próprio. Não há WinUI 3 Gallery instalada para comparação lado a lado; a referência visual é o XAML oficial.
+
 ## Panel (roteamento comum)
 
 `panel::Panel` guarda os controles em ordem de Tab e faz o roteamento que toda janela precisa; antes isso vivia copiado no exemplo.
@@ -374,7 +392,7 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 - [x] Eventos UIA de BoundingRectangle (troca de DPI) e ToggleState; IsEnabled não muda em tempo de execução no exemplo
 - [x] Narrador: com o `buttons` aberto, Tab por todos os controles e Espaço nos de alternar funcionaram (relato do usuário, 2026-11-22; sem transcrição da fala). NVDA não testado
 - [x] Texto sem alocação no heap por frame: rótulos de até 128 unidades UTF-16 são codificados na pilha (`with_wide`); só textos maiores alocam
-- [x] Slider, CheckBox de três estados, `Panel`, Flyout (com popup acrílico, animação do sistema e light dismiss), MenuFlyout (itens, atalhos, teclado)
+- [x] Slider, CheckBox de três estados, `Panel`, Flyout (com popup acrílico, animação do sistema e light dismiss), MenuFlyout (itens, atalhos, teclado), ToolTip (timers do sistema, fade)
 - [ ] Teste com NVDA; UIA do conteúdo de flyouts e popups; cache do layout de texto
 - [ ] Tudo o que falta para substituir o `explorer.exe` (TextBox, ListView, ícones, barra de tarefas, Iniciar, bandeja, desktop): ver o [ROADMAP.md](ROADMAP.md)
 - Fora do escopo: Mica no Win10/Win11 21H2 (a meta é o Win11 atual)
