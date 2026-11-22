@@ -300,6 +300,10 @@ fn high_contrast_on() -> bool {
     ok.is_ok() && hc.dwFlags.contains(HCF_HIGHCONTRASTON)
 }
 
+/// `SymbolThemeFontFamily` ("Segoe Fluent Icons,Segoe MDL2 Assets"): the icon font.
+/// Only the first entry: the Windows 10 fallback is out of scope.
+pub const SYMBOL_FAMILY: PCWSTR = w!("Segoe Fluent Icons");
+
 /// Typographic family used by WinUI (`XamlAutoFontFamily` resolves to it).
 /// One variable font; the optical-size instance (Small/Text/Display) is picked
 /// from the font size, as XAML does (see [`crate::gfx::Surface::format`]).

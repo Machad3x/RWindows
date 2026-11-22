@@ -142,6 +142,21 @@ Pendente: `AnimatedIcon`.
 
 Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As regras de press e release vêm do padrão confirmado em `OnPointerMoved` e `KeyUp`.
 
+## CheckBox
+
+`check_box::CheckBox::new(label, rect, checked)` é o `CheckBox` de dois estados do WinUI (`DefaultCheckBoxStyle`). A entrada é a do ToggleButton, porque o `CheckBox` deriva dele.
+
+| Regra | Fonte |
+|---|---|
+| Enter não faz nada; só Espaço (e clique) alterna | `CheckBox::Initialize` → `SetAcceptsReturn(false)`; `ButtonBaseKeyProcess.h` (`IsPress`). O `Button` ganhou `accepts_return` (interno ao crate) |
+| `+` do teclado numérico marca, `-` desmarca, cancelando um Espaço segurado (`put_IsPressed(FALSE)`); desabilitado ignora | `CheckBox::OnKeyDownInternal` (`VirtualKey_Add/Subtract`). `Key::Add`/`Key::Subtract` novos; no Button cancelam um Espaço segurado como qualquer tecla que não pressiona |
+| Quadrado 20×20 raio 4, borda 1, centralizado na vertical; texto 8 DIPs à direita e 5 do topo; mínimo 120×32; foco a `-7,-3,-7,-3` do controle todo | `CheckBoxSize`, `CheckBoxPadding`, `CheckBoxMinWidth`, `CheckBoxHeight`, `CheckBoxFocusVisualMargin` |
+| Glifo: `E73E` (CheckMark) da Segoe Fluent Icons em 12 DIPs, 1 DIP abaixo do centro, só quando marcado | O template usa `AnimatedIcon` (Lottie `AnimatedAcceptVisualSource`) com `FontIconSource` `CheckBoxCheckedGlyph` em `SymbolThemeFontFamily` como fallback. Sem Lottie, usamos o fallback; como ele não tem quadro "desligado", o glifo só é desenhado marcado. `Surface::icon_format` novo |
+| Pincéis: desmarcado `ControlAltFillColor*` + `ControlStrongStrokeColor*` (Pressed usa o stroke Disabled); marcado acento ×1/0.9/0.8 no fundo e na borda, glifo `TextOnAccentFillColor*`; todas as trocas são discretas (sem transição) | `CheckBox_themeresources.xaml` |
+| Alto contraste: tabela própria e fundo do controle todo em Window (`CheckBoxBackground*`) | dicionário `HighContrast` |
+
+Sem estado indeterminado (`IsThreeState`) por enquanto.
+
 ## ToggleSwitch
 
 `toggle_switch::ToggleSwitch::new(header, on_content, off_content, rect, on)` reproduz o `ToggleSwitch` do WinUI (`DefaultToggleSwitchStyle`). Usa o mesmo `Input`/`Response`/`Visual` do Button; `Response::clicked` = `IsOn` mudou (`Toggled`). `desired_size` mede header + conteúdo.

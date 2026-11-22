@@ -28,7 +28,8 @@ use windows::Win32::Graphics::DirectComposition::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_AUTOMATIC_FONT_AXES_OPTICAL_SIZE, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_AXIS_TAG_WEIGHT,
     DWRITE_FONT_AXIS_VALUE,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
     DWRITE_TEXT_METRICS, DWriteCreateFactory, IDWriteFactory6, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
@@ -179,6 +180,16 @@ impl Surface {
     /// `Segoe UI Variable`, optical size chosen automatically from the size.
     pub fn format(&self, ramp: &Ramp) -> Result<IDWriteTextFormat> {
         text_format(&self.dwrite, ramp)
+    }
+
+    /// `FontIcon` format: [`theme::SYMBOL_FAMILY`] at `size` DIPs, glyph centered.
+    pub fn icon_format(&self, size: f32) -> Result<IDWriteTextFormat> {
+        unsafe {
+            let format = self.dwrite.CreateTextFormat(theme::SYMBOL_FAMILY, None, &[], size, w!(""))?;
+            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            format.cast()
+        }
     }
 
     /// Starts a frame and clears to transparent (backdrop shows through).
@@ -411,7 +422,6 @@ mod tests {
 
     #[test]
     fn measure_should_not_depend_on_text_alignment() {
-        use windows::Win32::Graphics::DirectWrite::{DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER};
         let surface = Surface::new(hidden_window()).unwrap();
         let left = surface.format(&theme::BODY).unwrap();
         let centered = surface.format(&theme::BODY).unwrap();
@@ -475,6 +485,18 @@ mod tests {
             exists
         };
         assert!(exists.as_bool());
+    }
+
+    #[test]
+    fn icon_font_should_exist_and_map_the_check_mark() {
+        let surface = Surface::new(hidden_window()).unwrap();
+        let format = surface.icon_format(12.0).unwrap();
+        // E73E (CheckMark) must lay out with real width, not a missing-glyph box of the fallback font.
+        let (w, _) = surface.measure("\u{E73E}", &format).unwrap();
+        let mut name = [0u16; 64];
+        unsafe { format.GetFontFamilyName(&mut name).unwrap() };
+        let len = name.iter().position(|&c| c == 0).unwrap_or(0);
+        assert_eq!((String::from_utf16_lossy(&name[..len]).as_str(), w > 0.0), ("Segoe Fluent Icons", true));
     }
 
     #[test]

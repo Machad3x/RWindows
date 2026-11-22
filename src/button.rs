@@ -27,6 +27,10 @@ pub enum Key {
     Space,
     /// Enter.
     Enter,
+    /// Numpad `+` (`VirtualKey_Add`: checks a CheckBox).
+    Add,
+    /// Numpad `-` (`VirtualKey_Subtract`: unchecks a CheckBox).
+    Subtract,
     /// Any other key (cancels a held Space/Enter press).
     Other,
 }
@@ -142,6 +146,8 @@ pub struct Button {
     checked: Option<bool>,
     /// `SubtleButtonStyle`.
     subtle: bool,
+    /// `m_bKeyboardNavigationAcceptsReturn`: Enter presses like Space (false on CheckBox).
+    accepts_return: bool,
     /// State the background is transitioning from (`BackgroundTransition`).
     bg_from: (Visual, Look),
     bg: Tween,
@@ -174,6 +180,7 @@ impl Button {
             focus: None,
             checked: None,
             subtle: false,
+            accepts_return: true,
             bg_from: (Visual::Rest, if accent { Look::Accent } else { Look::Default }),
             bg: Tween::idle(1.0),
         }
@@ -187,6 +194,20 @@ impl Button {
     /// WinUI `SubtleButtonStyle`: no fill or border at rest (taskbar, Start, title bar buttons).
     pub fn subtle(label: &str, rect: D2D_RECT_F) -> Self {
         Self { subtle: true, ..Self::new(label, rect, false) }
+    }
+
+    /// `SetAcceptsReturn` (CheckBox and RadioButton ignore Enter).
+    pub(crate) fn set_accepts_return(&mut self, accepts: bool) {
+        self.accepts_return = accepts;
+    }
+
+    /// Sets `IsChecked` of a toggle button without a click.
+    pub(crate) fn set_checked(&mut self, checked: bool) -> Response {
+        let before = self.snapshot();
+        if self.checked.is_some() {
+            self.checked = Some(checked);
+        }
+        self.changed(before)
     }
 
     /// `IsChecked` of a toggle button; `None` for a plain button.
@@ -249,6 +270,11 @@ impl Button {
         }
     }
 
+    /// True while the button has focus of any kind.
+    pub(crate) fn has_focus(&self) -> bool {
+        self.focus.is_some()
+    }
+
     /// True when the focus rectangle must be drawn (keyboard focus only).
     pub fn focus_visible(&self) -> bool {
         self.enabled && self.focus == Some(FocusKind::Keyboard)
@@ -272,6 +298,12 @@ impl Button {
 
     /// Feeds one input event.
     pub fn handle(&mut self, input: Input) -> Response {
+        // IsPress: Enter counts only when the control accepts return.
+        let input = match input {
+            Input::KeyDown(Key::Enter) if !self.accepts_return => Input::KeyDown(Key::Other),
+            Input::KeyUp(Key::Enter) if !self.accepts_return => Input::KeyUp(Key::Other),
+            other => other,
+        };
         let before = self.snapshot();
         let mut r = Response::default();
         match input {
@@ -301,7 +333,7 @@ impl Button {
                     self.key_down = true;
                     self.pressed = true;
                 }
-                Key::Other if self.key_down => {
+                Key::Other | Key::Add | Key::Subtract if self.key_down => {
                     self.key_down = false;
                     self.pressed = false;
                 }
@@ -803,6 +835,23 @@ mod tests {
     fn click(b: &mut Button) -> Response {
         b.handle(Input::PointerDown(INSIDE.0, INSIDE.1));
         b.handle(Input::PointerUp(INSIDE.0, INSIDE.1))
+    }
+
+    #[test]
+    fn enter_should_do_nothing_when_return_is_not_accepted() {
+        let mut b = toggle(false);
+        b.set_accepts_return(false);
+        b.handle(Input::Focus(FocusKind::Keyboard));
+        b.handle(Input::KeyDown(Key::Enter));
+        let up = b.handle(Input::KeyUp(Key::Enter));
+        assert_eq!((b.is_checked(), up.clicked), (Some(false), false));
+    }
+
+    #[test]
+    fn set_checked_should_change_the_state_without_a_click() {
+        let mut b = toggle(false);
+        let r = b.set_checked(true);
+        assert_eq!((b.is_checked(), r.clicked, r.redraw), (Some(true), false, true));
     }
 
     #[test]

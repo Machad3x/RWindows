@@ -11,6 +11,7 @@
 
 pub mod backdrop;
 pub mod button;
+pub mod check_box;
 pub mod easing;
 pub mod gfx;
 pub mod theme;
