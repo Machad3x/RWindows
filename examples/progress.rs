@@ -49,6 +49,7 @@ struct App {
     ring: ProgressRing,
     text: TextBox,
     icon: Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>,
+    icon_gen: u64,
     time: f32,
     blink: bool,
 }
@@ -75,6 +76,13 @@ fn with_app(f: impl FnOnce(&mut App) -> Result<()>) -> LRESULT {
 
 impl App {
     fn render(&mut self) -> Result<()> {
+        // Device loss replaces the D2D context: reload the device-bound bitmap.
+        let generation = self.surface.generation();
+        if generation != self.icon_gen {
+            let mut cache = IconCache::new();
+            self.icon = cache.get(&self.surface, r"C:\Windows\System32\notepad.exe", 32).ok().cloned();
+            self.icon_gen = generation;
+        }
         let (s, t) = (&mut self.surface, &self.theme);
         s.begin();
         if let Some(c) = t.high_contrast {
@@ -227,7 +235,7 @@ fn main() -> Result<()> {
         let mut icons = IconCache::new();
         let icon = icons.get(&surface, r"C:\Windows\System32\notepad.exe", 32).ok().cloned();
         APP.with(|cell| {
-            *cell.borrow_mut() = Some(App { surface, theme, formats, radios, bar, ring, text, icon, time: 0.0, blink: true })
+            *cell.borrow_mut() = Some(App { surface, theme, formats, radios, bar, ring, text, icon, icon_gen: 0, time: 0.0, blink: true })
         });
         with_app(App::render);
         _ = SetTimer(Some(hwnd), TIMER, 33, None);

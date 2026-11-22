@@ -22,6 +22,7 @@ use crate::gfx::{Surface, rect};
 #[derive(Default)]
 pub struct IconCache {
     entries: HashMap<(String, u32), ID2D1Bitmap1>,
+    generation: u64,
 }
 
 impl IconCache {
@@ -42,6 +43,11 @@ impl IconCache {
 
     /// Returns the icon for `path`, loading it on the first call.
     pub fn get(&mut self, surface: &Surface, path: &str, size: u32) -> Result<&ID2D1Bitmap1> {
+        let generation = surface.generation();
+        if generation != self.generation {
+            self.entries.clear();
+            self.generation = generation;
+        }
         let key = (path.to_owned(), size);
         if !self.entries.contains_key(&key) {
             let bitmap = load(surface, path, size)?;
@@ -62,8 +68,12 @@ fn load(surface: &Surface, path: &str, size: u32) -> Result<ID2D1Bitmap1> {
     };
     let handle = unsafe { item.GetImage(SIZE { cx: size as i32, cy: size as i32 }, SIIGBF_ICONONLY)? };
     let mut info = BITMAP::default();
-    unsafe {
-        GetObjectW(handle.into(), size_of::<BITMAP>() as i32, Some(ptr::from_mut(&mut info).cast()));
+    let read = unsafe {
+        GetObjectW(handle.into(), size_of::<BITMAP>() as i32, Some(ptr::from_mut(&mut info).cast()))
+    };
+    if read == 0 || info.bmBits.is_null() || info.bmBitsPixel != 32 {
+        unsafe { _ = DeleteObject(handle.into()) };
+        return Err(windows::Win32::Foundation::E_INVALIDARG.into());
     }
     let props = D2D1_BITMAP_PROPERTIES1 {
         pixelFormat: D2D1_PIXEL_FORMAT {
@@ -75,16 +85,15 @@ fn load(surface: &Surface, path: &str, size: u32) -> Result<ID2D1Bitmap1> {
         bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
         colorContext: Default::default(),
     };
-    let bitmap = unsafe {
-        surface.ctx().CreateBitmap(
-            D2D_SIZE_U { width: size, height: size },
-            Some(info.bmBits.cast()),
-            info.bmWidthBytes as u32,
-            &props,
-        )?
+    let dims = D2D_SIZE_U {
+        width: info.bmWidth.unsigned_abs(),
+        height: info.bmHeight.unsigned_abs(),
+    };
+    let result = unsafe {
+        surface.ctx().CreateBitmap(dims, Some(info.bmBits.cast()), info.bmWidthBytes as u32, &props)
     };
     unsafe { _ = DeleteObject(handle.into()) };
-    Ok(bitmap)
+    result
 }
 
 /// Draws a cached icon at `left, top` with its natural pixel size in DIPs.

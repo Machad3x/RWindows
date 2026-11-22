@@ -4,12 +4,12 @@
 
 use std::ptr;
 
-use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+use windows::Win32::Foundation::{E_POINTER, HANDLE, HGLOBAL, GlobalFree};
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::core::Result;
 
@@ -90,6 +90,9 @@ impl TextBox {
 
     /// Deletes the character before the caret (Backspace).
     pub fn backspace(&mut self) {
+        if !self.enabled {
+            return;
+        }
         if let Some((start, end)) = self.selection.take() {
             self.chars.drain(start..end);
             self.cursor = start;
@@ -101,6 +104,9 @@ impl TextBox {
 
     /// Deletes the character after the caret (Delete).
     pub fn delete(&mut self) {
+        if !self.enabled {
+            return;
+        }
         if let Some((start, end)) = self.selection.take() {
             self.chars.drain(start..end);
             self.cursor = start;
@@ -111,6 +117,9 @@ impl TextBox {
 
     /// Moves the caret by `delta` characters, clearing the selection.
     pub fn move_cursor(&mut self, delta: isize) {
+        if !self.enabled {
+            return;
+        }
         let next = (self.cursor as isize + delta).clamp(0, self.chars.len() as isize) as usize;
         self.cursor = next;
         self.selection = None;
@@ -118,12 +127,15 @@ impl TextBox {
 
     /// `Ctrl+A`.
     pub fn select_all(&mut self) {
+        if !self.enabled {
+            return;
+        }
         self.selection = Some((0, self.chars.len()));
         self.cursor = self.chars.len();
     }
 
-    /// Cuts the selection to the clipboard, or deletes the previous char when
-    /// nothing is selected (Win11 TextBox behavior for Ctrl+X with no selection).
+    /// Copies the selection to the clipboard and deletes it; does nothing when
+    /// there is no selection.
     pub fn cut(&mut self) -> Result<()> {
         let selected = self.copy()?;
         if selected {
@@ -179,19 +191,23 @@ impl TextBox {
         s.stroke_round(r, RADIUS, 1.0, t.stroke);
         let text_rect = rect(r.left + PADDING.0, r.top + PADDING.1, r.right - PADDING.0, r.bottom - PADDING.1);
         if self.chars.is_empty() {
-            s.text(&self.placeholder, &f.body, text_rect, t.text_secondary);
+            s.text_no_wrap(&self.placeholder, &f.body, text_rect, t.text_secondary);
             return Ok(());
         }
-        let (start, end) = self.selection.unwrap_or((self.cursor, self.cursor));
+        let len = self.chars.len();
+        let cursor = self.cursor.min(len);
+        let (start, end) = self.selection
+            .map(|(a, b)| (a.min(len), b.max(a).min(len)))
+            .unwrap_or((cursor, cursor));
         if end > start {
             let (w, _) = s.measure(&self.chars[..start].iter().collect::<String>(), &f.body)?;
             let (sw, _) = s.measure(&self.chars[start..end].iter().collect::<String>(), &f.body)?;
             let x = text_rect.left + w;
             s.fill_round(rect(x, text_rect.top, x + sw, text_rect.bottom), 0.0, t.accent);
         }
-        s.text(&self.text(), &f.body, text_rect, if self.enabled { t.text_primary } else { t.text_disabled });
+        s.text_no_wrap(&self.text(), &f.body, text_rect, if self.enabled { t.text_primary } else { t.text_disabled });
         if self.focused && blink && end == start {
-            let (w, _) = s.measure(&self.chars[..self.cursor].iter().collect::<String>(), &f.body)?;
+            let (w, _) = s.measure(&self.chars[..cursor].iter().collect::<String>(), &f.body)?;
             let x = text_rect.left + w;
             s.fill_round(rect(x, text_rect.top, x + 1.0, text_rect.bottom), 0.0, t.text_primary);
         }
@@ -199,46 +215,63 @@ impl TextBox {
     }
 }
 
+/// Always releases the clipboard, even on an error path.
+struct Clipboard;
+
+impl Clipboard {
+    fn open() -> Result<Self> {
+        unsafe { OpenClipboard(None)? };
+        Ok(Self)
+    }
+}
+
+impl Drop for Clipboard {
+    fn drop(&mut self) {
+        unsafe { _ = CloseClipboard() };
+    }
+}
+
 fn set_clipboard(text: &str) -> Result<()> {
     let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let _clipboard = Clipboard::open()?;
     unsafe {
-        OpenClipboard(None)?;
-        _ = EmptyClipboard();
+        EmptyClipboard()?;
         let mem = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2)?;
         let dst = GlobalLock(mem).cast::<u16>();
-        if !dst.is_null() {
-            ptr::copy_nonoverlapping(units.as_ptr(), dst, units.len());
+        if dst.is_null() {
+            _ = GlobalFree(Some(mem));
+            return Err(E_POINTER.into());
         }
+        ptr::copy_nonoverlapping(units.as_ptr(), dst, units.len());
         GlobalUnlock(mem)?;
-        _ = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(mem.0)));
-        CloseClipboard()?;
+        if let Err(e) = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(mem.0))) {
+            _ = GlobalFree(Some(mem));
+            return Err(e);
+        }
     }
     Ok(())
 }
 
 fn clipboard_text() -> Result<Option<String>> {
+    let _clipboard = Clipboard::open()?;
     unsafe {
-        OpenClipboard(None)?;
         let data = GetClipboardData(CF_UNICODETEXT.0 as u32)?;
-        let text = if data.is_invalid() {
-            None
-        } else {
-            let src = GlobalLock(HGLOBAL(data.0));
-            if src.is_null() {
-                None
-            } else {
-                let mut len = 0;
-                while *src.add(len).cast::<u16>() != 0 {
-                    len += 1;
-                }
-                let units = std::slice::from_raw_parts(src.cast::<u16>(), len);
-                let result = String::from_utf16_lossy(units);
-                GlobalUnlock(HGLOBAL(data.0))?;
-                Some(result)
-            }
-        };
-        CloseClipboard()?;
-        Ok(text)
+        if data.is_invalid() {
+            return Ok(None);
+        }
+        let global = HGLOBAL(data.0);
+        let src = GlobalLock(global).cast::<u16>();
+        if src.is_null() {
+            return Ok(None);
+        }
+        let capacity = GlobalSize(global) / 2;
+        let mut len = 0;
+        while len < capacity && *src.add(len) != 0 {
+            len += 1;
+        }
+        let result = String::from_utf16_lossy(std::slice::from_raw_parts(src, len));
+        GlobalUnlock(global)?;
+        Ok(Some(result))
     }
 }
 

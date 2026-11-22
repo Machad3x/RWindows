@@ -31,7 +31,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_AXIS_VALUE,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
     DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_METRICS, DWriteCreateFactory, IDWriteFactory6, IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory6,
+    IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
@@ -69,15 +70,20 @@ pub struct Surface {
     hwnd: HWND,
     dpi: f32,
     px: (u32, u32),
+    /// Incremented whenever the D2D device is recreated; device-bound resources
+    /// (icon bitmaps) must be reloaded when it changes.
+    generation: u64,
     /// `IDWriteTextLayout`s from `Surface::text`, keyed by format, text and width.
     /// DirectWrite layouts are device independent, so they survive target binds.
-    layouts: RefCell<HashMap<(usize, u64, u32, u32), CachedLayout>>,
+    layouts: RefCell<HashMap<LayoutKey, CachedLayout>>,
 }
 
 struct CachedLayout {
     text: String,
     layout: IDWriteTextLayout,
 }
+
+type LayoutKey = (usize, u64, u32, u32, bool);
 
 impl Surface {
     /// Binds a surface to `hwnd`. Create the window with `WS_EX_NOREDIRECTIONBITMAP`
@@ -125,6 +131,7 @@ impl Surface {
                 hwnd,
                 dpi: GetDpiForWindow(hwnd) as f32,
                 px,
+                generation: 0,
                 layouts: RefCell::new(HashMap::new()),
             };
             surface.bind()?;
@@ -178,6 +185,11 @@ impl Surface {
     /// Pixels per DIP.
     pub fn scale(&self) -> f32 {
         self.dpi / 96.0
+    }
+
+    /// Increments when the D2D device is recreated (device-bound bitmaps die).
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Client size in DIPs.
@@ -250,6 +262,7 @@ impl Surface {
         // Best effort: on a lost device Commit may fail, the release still happens.
         unsafe { _ = self._dcomp.Commit() };
         *self = Self::new(self.hwnd)?;
+        self.generation += 1;
         Ok(())
     }
 
@@ -344,7 +357,8 @@ impl Surface {
             self.brush.SetColor(&color);
             for i in 0..steps {
                 let a0 = from + (to - from) * i as f32 / steps as f32;
-                let a1 = from + (to - from) * (i + 1) as f32 / steps as f32;
+                // Slight overlap hides the seams between butt-capped segments.
+                let a1 = from + (to - from) * (i + 1) as f32 / steps as f32 + 0.02 * (to - from).signum();
                 let p0 = Vector2::new(cx + radius * a0.cos(), cy + radius * a0.sin());
                 let p1 = Vector2::new(cx + radius * a1.cos(), cy + radius * a1.sin());
                 self.ctx.DrawLine(p0, p1, &self.brush, width, None);
@@ -384,14 +398,31 @@ impl Surface {
 
     /// Draws `text` inside `rect`, reusing the `IDWriteTextLayout` between frames.
     pub fn text(&self, text: &str, format: &IDWriteTextFormat, rect: D2D_RECT_F, color: D2D1_COLOR_F) {
+        self.draw_text(text, format, rect, color, true);
+    }
+
+    /// Same as [`Self::text`] but without word wrapping (single-line controls).
+    pub fn text_no_wrap(&self, text: &str, format: &IDWriteTextFormat, rect: D2D_RECT_F, color: D2D1_COLOR_F) {
+        self.draw_text(text, format, rect, color, false);
+    }
+
+    fn draw_text(&self, text: &str, format: &IDWriteTextFormat, rect: D2D_RECT_F, color: D2D1_COLOR_F, wrap: bool) {
         let width = (rect.right - rect.left).max(0.0);
         let height = (rect.bottom - rect.top).max(0.0);
-        let key = (format.as_raw() as usize, text_hash(text), width.to_bits(), height.to_bits());
+        let key = (format.as_raw() as usize, text_hash(text), width.to_bits(), height.to_bits(), wrap);
         let mut layouts = self.layouts.borrow_mut();
+        if layouts.len() > 256 {
+            layouts.clear();
+        }
         if layouts.get(&key).is_none_or(|c| c.text != text) {
-            let layout = with_wide(text, |wide| unsafe {
+            let Ok(layout) = with_wide(text, |wide| unsafe {
                 self.dwrite.CreateTextLayout(wide, format, width, height)
-            }).expect("CreateTextLayout");
+            }) else {
+                return;
+            };
+            if !wrap {
+                unsafe { _ = layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP) };
+            }
             layouts.insert(key, CachedLayout { text: text.to_owned(), layout });
         }
         let cached = &layouts[&key];
