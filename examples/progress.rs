@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use fluent_win::backdrop;
 use fluent_win::button::{FocusKind, Input, Key};
 use fluent_win::gfx::{Surface, rect};
+use fluent_win::icons::{IconCache, draw as draw_icon};
 use fluent_win::panel::Formats;
 use fluent_win::progress::{ProgressBar, ProgressRing};
 use fluent_win::radio_button::{MIN_WIDTH, ROW_HEIGHT, RadioButton, check_one};
@@ -47,6 +48,7 @@ struct App {
     bar: ProgressBar,
     ring: ProgressRing,
     text: TextBox,
+    icon: Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>,
     time: f32,
     blink: bool,
 }
@@ -88,6 +90,9 @@ impl App {
         self.ring.draw(s, t, self.time);
         self.text.draw(s, t, &self.formats,
             rect(PAD, 250.0, PAD + 240.0, 282.0), self.blink)?;
+        if let Some(icon) = &self.icon {
+            draw_icon(s, icon, 300.0, 24.0, 32.0);
+        }
         s.end()
     }
 
@@ -219,8 +224,10 @@ fn main() -> Result<()> {
         let ring = ProgressRing { center: (300.0, 200.0), radius: 24.0, value: None };
         let mut text = TextBox::new("");
         text.placeholder = "Digite algo...".to_owned();
+        let mut icons = IconCache::new();
+        let icon = icons.get(&surface, r"C:\Windows\System32\notepad.exe", 32).ok().cloned();
         APP.with(|cell| {
-            *cell.borrow_mut() = Some(App { surface, theme, formats, radios, bar, ring, text, time: 0.0, blink: true })
+            *cell.borrow_mut() = Some(App { surface, theme, formats, radios, bar, ring, text, icon, time: 0.0, blink: true })
         });
         with_app(App::render);
         _ = SetTimer(Some(hwnd), TIMER, 33, None);

@@ -15,6 +15,7 @@ pub mod check_box;
 pub mod easing;
 pub mod flyout;
 pub mod gfx;
+pub mod icons;
 pub mod layout;
 pub mod list_view;
 pub mod menu_flyout;

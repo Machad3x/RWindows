@@ -39,7 +39,7 @@ O shell precisa disto antes de existir. Ordem sugerida (cada item: TDD, README, 
 - [x] **ScrollViewer** (`scroll_viewer::ScrollBar`): barra vertical de 12 DIPs com thumb 8×30, arraste, page up/down e roda; integrada ao `examples/list.rs`. Falta barra horizontal, auto-ocultação do Win11, animações e UIA.
 - [x] **TextBox** (busca do Iniciar): cursor, seleção, clipboard Unicode, setas/Home/End, Ctrl+A/C/X/V, placeholder e caret; exemplo `examples/progress.rs` verificado com digitação real. Falta preview de IME, arraste de seleção, menu de contexto e UIA Text/Value.
 - [x] **RadioButton, ProgressRing, ProgressBar**: estilos oficiais, grupo de seleção única, anel determinado/indeterminado e exemplo `examples/progress.rs` verificado visualmente. Faltam animações do glifo, estados Paused/Error e UIA.
-- [ ] **Ícones reais**: extrair ícone de app e arquivo (`IShellItemImageFactory`) e desenhar como bitmap D2D, com cache.
+- [x] **Ícones reais**: `icons::IconCache` extrai com `IShellItemImageFactory`/`GetImage`, cria bitmap D2D e cacheia por caminho+tamanho; ícone do notepad verificado no `examples/progress.rs`. Falta SCALEUP, pastas virtuais e redimensionamento suave.
 - [ ] **UIA do conteúdo de flyouts e popups** (o Narrador hoje não lê o que está dentro).
 - [x] **Cache do layout de texto** (`IDWriteTextLayout`): `Surface::text` reutiliza layouts por formato/texto/tamanho, com verificação de colisão e teste.
 - [ ] **Teste com NVDA**.

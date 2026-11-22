@@ -45,6 +45,7 @@ surface.end()?;
 | `radio_button` | RadioButton do Win11 com grupo de seleção única e glifo 12/14/10 |
 | `progress` | ProgressBar (trilho 1 DIP) e ProgressRing (traço 4 DIPs, determinado/indeterminado) |
 | `text_box` | TextBox de uma linha: cursor, seleção, clipboard Unicode e placeholder |
+| `icons` | Ícones reais do Windows via `IShellItemImageFactory`, convertidos em bitmap D2D e cacheados por caminho/tamanho |
 | `panel` | Roteamento comum: foco, captura, Tab, eventos (`trait Control`) |
 | `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, e eventos de propriedade |
 
@@ -318,6 +319,10 @@ Exemplo: "Configurações", "Salvar", "Wi-Fi", "Mais opções" e "Menu" têm dic
 O presenter está implementado em `ListView::draw` com os pincéis acima (incluindo o indicador de seleção de 4 DIPs em `AccentFillColorDefault`), e `ListView::handle` cobre ponteiro, foco e setas/Home/End. O exemplo `examples/list.rs` mostra 500 itens, seleção por clique/teclado e rolagem de 3 linhas por notch da roda; `Surface::with_clip` recorta o desenho ao viewport, como um `ScrollViewer`. Verificado visualmente no Windows real: linhas de 40 DIPs, hover/seleção discretos e nenhum vazamento para a área de status.
 
 Falta: barra de rolagem desenhada, PageUp/PageDown, seleção múltipla, arrastar, agrupamento/cabeçalhos, `GridView`, transições de seleção e UIA (SelectionItem/Selection pattern).
+
+## Ícones reais
+
+`icons::IconCache` chama `SHCreateItemFromParsingName` + `IShellItemImageFactory::GetImage` com `SIIGBF_ICONONLY`, lê o `BITMAP` retornado e cria um `ID2D1Bitmap1` com `CreateBitmap` (BGRA8 pré-multiplicado). Os bitmaps ficam em cache por `(caminho, tamanho em pixels)` e são descartados com `clear()` quando o device é recriado. No exemplo `examples/progress.rs` o ícone do `notepad.exe` aparece no canto superior direito — verificado na máquina real (Windows 26H2). Limite: sem `SIIGBF_SCALEUP`, sem ícones de pastas virtuais e sem redimensionamento suave (o cache é por tamanho exato).
 
 ## Cache de layout de texto
 
