@@ -50,6 +50,8 @@ struct App {
     text: TextBox,
     icon: Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>,
     icon_gen: u64,
+    /// First half of a UTF-16 surrogate pair from WM_CHAR.
+    pending_surrogate: Option<u16>,
     time: f32,
     blink: bool,
 }
@@ -80,8 +82,10 @@ impl App {
         let generation = self.surface.generation();
         if generation != self.icon_gen {
             let mut cache = IconCache::new();
-            self.icon = cache.get(&self.surface, r"C:\Windows\System32\notepad.exe", 32).ok().cloned();
-            self.icon_gen = generation;
+            if let Ok(icon) = cache.get(&self.surface, r"C:\Windows\System32\notepad.exe", 32) {
+                self.icon = Some(icon.clone());
+                self.icon_gen = generation;
+            }
         }
         let (s, t) = (&mut self.surface, &self.theme);
         s.begin();
@@ -108,7 +112,9 @@ impl App {
         if !down {
             let mut clicked = None;
             for (i, radio) in self.radios.iter_mut().enumerate() {
-                if radio.handle(Input::PointerUp(x, y)) {
+                let top = PAD + i as f32 * (ROW_HEIGHT + GAP);
+                let local = (x - PAD, y - top);
+                if radio.handle(Input::PointerUp(local.0, local.1)) {
                     clicked = Some(i);
                 }
             }
@@ -133,8 +139,25 @@ impl App {
         self.render()
     }
 
-    fn char(&mut self, c: char) -> Result<()> {
-        if !c.is_control() {
+    /// Accepts one UTF-16 unit from WM_CHAR and joins surrogate pairs.
+    fn unit(&mut self, unit: u16) -> Result<()> {
+        let decoded = if let Some(high) = self.pending_surrogate.take() {
+            if (0xDC00..0xE000).contains(&unit) {
+                let scalar = 0x10000
+                    + (((u32::from(high) - 0xD800) << 10) | (u32::from(unit) - 0xDC00));
+                char::from_u32(scalar)
+            } else {
+                None
+            }
+        } else if (0xD800..0xDC00).contains(&unit) {
+            self.pending_surrogate = Some(unit);
+            None
+        } else {
+            char::from_u32(u32::from(unit))
+        };
+        if let Some(c) = decoded
+            && !c.is_control()
+        {
             self.text.insert(&c.to_string());
         }
         self.render()
@@ -179,7 +202,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             let k = a.surface.scale();
             a.input(f32::from(loword(lp.0)) / k, f32::from(hiword(lp.0)) / k, false)
         }),
-        WM_CHAR => with_app(|a| a.char(char::from_u32(wp.0 as u32).unwrap_or('\0'))),
+        WM_CHAR => with_app(|a| a.unit(wp.0 as u16)),
         WM_SETFOCUS => with_app(|a| {
             a.text.handle(Input::Focus(FocusKind::Keyboard));
             a.render()
@@ -235,7 +258,7 @@ fn main() -> Result<()> {
         let mut icons = IconCache::new();
         let icon = icons.get(&surface, r"C:\Windows\System32\notepad.exe", 32).ok().cloned();
         APP.with(|cell| {
-            *cell.borrow_mut() = Some(App { surface, theme, formats, radios, bar, ring, text, icon, icon_gen: 0, time: 0.0, blink: true })
+            *cell.borrow_mut() = Some(App { surface, theme, formats, radios, bar, ring, text, icon, icon_gen: 0, pending_surrogate: None, time: 0.0, blink: true })
         });
         with_app(App::render);
         _ = SetTimer(Some(hwnd), TIMER, 33, None);

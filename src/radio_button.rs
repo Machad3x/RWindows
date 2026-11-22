@@ -52,6 +52,7 @@ impl RadioButton {
             Input::PointerMove(x, y) => self.hot = self.hit(x, y),
             Input::PointerDown(x, y) => {
                 self.hot = self.hit(x, y);
+                self.focused = self.hot;
                 self.pressed = self.hot;
             }
             Input::PointerUp(x, y) => {
@@ -66,8 +67,14 @@ impl RadioButton {
             }
             Input::KeyDown(_) => self.pressed = false,
             Input::Focus(FocusKind::Keyboard) => self.focused = true,
-            Input::Blur | Input::PointerLeave | Input::CaptureLost => {
+            // Only a real focus loss clears the focus ring; leaving the pointer
+            // or losing capture must not, like ButtonBase.
+            Input::Blur => {
                 self.focused = false;
+                self.hot = false;
+                self.pressed = false;
+            }
+            Input::PointerLeave | Input::CaptureLost => {
                 self.hot = false;
                 self.pressed = false;
             }
@@ -137,6 +144,17 @@ mod tests {
         r.handle(Input::Focus(FocusKind::Keyboard));
         r.handle(Input::KeyDown(Key::Space));
         assert!(r.handle(Input::KeyUp(Key::Space)));
+    }
+
+    #[test]
+    fn pointer_press_should_take_focus_and_mouse_leave_should_not_drop_it() {
+        let mut r = RadioButton::new("A", false);
+        r.handle(Input::PointerDown(4.0, 4.0));
+        assert!(r.focused);
+        r.handle(Input::PointerLeave);
+        assert!(r.focused);
+        r.handle(Input::Blur);
+        assert!(!r.focused);
     }
 
     #[test]

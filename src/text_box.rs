@@ -6,6 +6,7 @@ use std::ptr;
 
 use windows::Win32::Foundation::{E_POINTER, HANDLE, HGLOBAL, GlobalFree};
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
@@ -39,6 +40,8 @@ pub struct TextBox {
     pub placeholder: String,
     focused: bool,
     hot: bool,
+    /// Last measured prefix width: (caret index, text length, width in DIPs).
+    prefix: Option<(usize, usize, f32)>,
 }
 
 impl Default for TextBox {
@@ -52,7 +55,7 @@ impl TextBox {
     pub fn new(text: impl Into<String>) -> Self {
         let chars: Vec<char> = text.into().chars().collect();
         let cursor = chars.len();
-        Self { chars, cursor, selection: None, enabled: true, placeholder: String::new(), focused: false, hot: false }
+        Self { chars, cursor, selection: None, enabled: true, placeholder: String::new(), focused: false, hot: false, prefix: None }
     }
 
     /// Current content.
@@ -72,6 +75,7 @@ impl TextBox {
 
     /// Replaces the whole content and places the caret at the end.
     pub fn set_text(&mut self, text: &str) {
+        self.prefix = None;
         self.chars = text.chars().collect();
         self.cursor = self.chars.len();
         self.selection = None;
@@ -82,6 +86,7 @@ impl TextBox {
         if !self.enabled {
             return;
         }
+        self.prefix = None;
         let (start, end) = self.selection.take().unwrap_or((self.cursor, self.cursor));
         let insert: Vec<char> = text.chars().filter(|&c| c != '\r' && c != '\n').collect();
         self.chars.splice(start..end, insert.iter().copied());
@@ -93,6 +98,7 @@ impl TextBox {
         if !self.enabled {
             return;
         }
+        self.prefix = None;
         if let Some((start, end)) = self.selection.take() {
             self.chars.drain(start..end);
             self.cursor = start;
@@ -107,6 +113,7 @@ impl TextBox {
         if !self.enabled {
             return;
         }
+        self.prefix = None;
         if let Some((start, end)) = self.selection.take() {
             self.chars.drain(start..end);
             self.cursor = start;
@@ -147,6 +154,9 @@ impl TextBox {
     /// Copies the selection to the clipboard. Returns `false` when empty.
     pub fn copy(&self) -> Result<bool> {
         let Some((start, end)) = self.selection else { return Ok(false) };
+        let len = self.chars.len();
+        let start = start.min(len);
+        let end = end.max(start).min(len);
         if start == end {
             return Ok(false);
         }
@@ -185,7 +195,22 @@ impl TextBox {
     }
 
     /// Draws the border, text, selection and blinking caret.
-    pub fn draw(&self, s: &Surface, t: &Theme, f: &Formats, r: D2D_RECT_F, blink: bool) -> Result<()> {
+    /// Width of `chars[..index]`, cached between frames of the same text.
+    fn prefix_width(&mut self, s: &Surface, format: &IDWriteTextFormat, index: usize) -> Result<f32> {
+        let len = self.chars.len();
+        if let Some((cached_index, cached_len, width)) = self.prefix
+            && cached_index == index && cached_len == len
+        {
+            return Ok(width);
+        }
+        let prefix: String = self.chars[..index].iter().collect();
+        let (width, _) = s.measure(&prefix, format)?;
+        self.prefix = Some((index, len, width));
+        Ok(width)
+    }
+
+    /// Draws the border, text, selection and blinking caret.
+    pub fn draw(&mut self, s: &Surface, t: &Theme, f: &Formats, r: D2D_RECT_F, blink: bool) -> Result<()> {
         let bg = if self.enabled { t.control_fill } else { t.control_fill_disabled };
         s.fill_round(r, RADIUS, bg);
         s.stroke_round(r, RADIUS, 1.0, t.stroke);
@@ -200,14 +225,14 @@ impl TextBox {
             .map(|(a, b)| (a.min(len), b.max(a).min(len)))
             .unwrap_or((cursor, cursor));
         if end > start {
-            let (w, _) = s.measure(&self.chars[..start].iter().collect::<String>(), &f.body)?;
+            let w = self.prefix_width(s, &f.body, start)?;
             let (sw, _) = s.measure(&self.chars[start..end].iter().collect::<String>(), &f.body)?;
             let x = text_rect.left + w;
             s.fill_round(rect(x, text_rect.top, x + sw, text_rect.bottom), 0.0, t.accent);
         }
         s.text_no_wrap(&self.text(), &f.body, text_rect, if self.enabled { t.text_primary } else { t.text_disabled });
         if self.focused && blink && end == start {
-            let (w, _) = s.measure(&self.chars[..cursor].iter().collect::<String>(), &f.body)?;
+            let w = self.prefix_width(s, &f.body, cursor)?;
             let x = text_rect.left + w;
             s.fill_round(rect(x, text_rect.top, x + 1.0, text_rect.bottom), 0.0, t.text_primary);
         }
@@ -233,9 +258,9 @@ impl Drop for Clipboard {
 
 fn set_clipboard(text: &str) -> Result<()> {
     let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    let _clipboard = Clipboard::open()?;
+    // Prepare the replacement before touching the clipboard: a failed allocation
+    // must not destroy what the user already had copied.
     unsafe {
-        EmptyClipboard()?;
         let mem = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2)?;
         let dst = GlobalLock(mem).cast::<u16>();
         if dst.is_null() {
@@ -243,7 +268,21 @@ fn set_clipboard(text: &str) -> Result<()> {
             return Err(E_POINTER.into());
         }
         ptr::copy_nonoverlapping(units.as_ptr(), dst, units.len());
-        GlobalUnlock(mem)?;
+        // GlobalUnlock returns FALSE with NO_ERROR when the lock count reaches
+        // zero; the windows crate surfaces that as Err(S_OK), so ignore it.
+        _ = GlobalUnlock(mem);
+        let _clipboard = match Clipboard::open() {
+            Ok(guard) => guard,
+            Err(e) => {
+                _ = GlobalFree(Some(mem));
+                return Err(e);
+            }
+        };
+        if let Err(e) = EmptyClipboard() {
+            _ = GlobalFree(Some(mem));
+            return Err(e);
+        }
+        // On success the clipboard owns `mem`; on failure we still own it.
         if let Err(e) = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(mem.0))) {
             _ = GlobalFree(Some(mem));
             return Err(e);
@@ -270,14 +309,26 @@ fn clipboard_text() -> Result<Option<String>> {
             len += 1;
         }
         let result = String::from_utf16_lossy(std::slice::from_raw_parts(src, len));
-        GlobalUnlock(global)?;
+        _ = GlobalUnlock(global);
         Ok(Some(result))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    static CLIPBOARD_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn clipboard_should_round_trip_unicode() {
+        let _guard = CLIPBOARD_LOCK.lock().unwrap();
+        let text = "olá 😀";
+        set_clipboard(text).unwrap();
+        assert_eq!(clipboard_text().unwrap().as_deref(), Some(text));
+    }
 
     #[test]
     fn insert_and_backspace_should_work_at_the_caret() {

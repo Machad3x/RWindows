@@ -49,7 +49,7 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{Error, Interface, Result, w};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::mem::ManuallyDrop;
 
 use windows_numerics::{Matrix3x2, Vector2};
@@ -73,13 +73,20 @@ pub struct Surface {
     /// Incremented whenever the D2D device is recreated; device-bound resources
     /// (icon bitmaps) must be reloaded when it changes.
     generation: u64,
-    /// `IDWriteTextLayout`s from `Surface::text`, keyed by format, text and width.
-    /// DirectWrite layouts are device independent, so they survive target binds.
+    /// `IDWriteTextLayout`s from `Surface::text`, keyed by format, text and size.
+    /// They are device independent but are dropped when the surface is rebuilt.
     layouts: RefCell<HashMap<LayoutKey, CachedLayout>>,
+    /// Insertion order, used to evict the oldest layouts instead of clearing all.
+    layout_order: RefCell<VecDeque<LayoutKey>>,
 }
+
+/// Maximum number of cached text layouts. Large enough for a 500-item list,
+/// bounded so a long-lived shell cannot grow without limit.
+const MAX_LAYOUTS: usize = 4096;
 
 struct CachedLayout {
     text: String,
+    format: IDWriteTextFormat,
     layout: IDWriteTextLayout,
 }
 
@@ -133,6 +140,7 @@ impl Surface {
                 px,
                 generation: 0,
                 layouts: RefCell::new(HashMap::new()),
+                layout_order: RefCell::new(VecDeque::new()),
             };
             surface.bind()?;
             Ok(surface)
@@ -411,10 +419,9 @@ impl Surface {
         let height = (rect.bottom - rect.top).max(0.0);
         let key = (format.as_raw() as usize, text_hash(text), width.to_bits(), height.to_bits(), wrap);
         let mut layouts = self.layouts.borrow_mut();
-        if layouts.len() > 256 {
-            layouts.clear();
-        }
-        if layouts.get(&key).is_none_or(|c| c.text != text) {
+        let fresh = layouts.get(&key)
+            .is_some_and(|c| c.text == text && c.format.as_raw() == format.as_raw());
+        if !fresh {
             let Ok(layout) = with_wide(text, |wide| unsafe {
                 self.dwrite.CreateTextLayout(wide, format, width, height)
             }) else {
@@ -423,7 +430,18 @@ impl Surface {
             if !wrap {
                 unsafe { _ = layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP) };
             }
-            layouts.insert(key, CachedLayout { text: text.to_owned(), layout });
+            layouts.insert(key, CachedLayout {
+                text: text.to_owned(),
+                format: format.clone(),
+                layout,
+            });
+            let mut order = self.layout_order.borrow_mut();
+            order.push_back(key);
+            while order.len() > MAX_LAYOUTS {
+                if let Some(old) = order.pop_front() {
+                    layouts.remove(&old);
+                }
+            }
         }
         let cached = &layouts[&key];
         unsafe {
@@ -569,6 +587,17 @@ mod tests {
         surface.text("cache me", &body, r, theme::argb(0xFF000000));
         assert_eq!(surface.layouts.borrow().len(), 1);
         surface.text("another", &body, r, theme::argb(0xFFFFFFFF));
+        assert_eq!(surface.layouts.borrow().len(), 2);
+    }
+
+    #[test]
+    fn text_cache_should_distinguish_formats_at_the_same_address_kind() {
+        let surface = Surface::new(hidden_window()).unwrap();
+        let body = surface.format(&theme::BODY).unwrap();
+        let caption = surface.format(&theme::CAPTION).unwrap();
+        let r = rect(0.0, 0.0, 200.0, 32.0);
+        surface.text("hello", &body, r, theme::argb(0xFFFFFFFF));
+        surface.text("hello", &caption, r, theme::argb(0xFFFFFFFF));
         assert_eq!(surface.layouts.borrow().len(), 2);
     }
 

@@ -12,7 +12,7 @@ Legenda: ✅ feito e verificado · 🟡 parcial · ⬜ não começado · ❓ inc
 
 ## Estado atual (2026-11-22)
 
-228 testes passando, clippy limpo, ~48 MB de RAM e 0 ms de CPU parado no exemplo (o `explorer.exe` foi medido em 327,7 MB).
+300+ testes passando, clippy limpo, ~48 MB de RAM e 0 ms de CPU parado no exemplo (o `explorer.exe` foi medido em 327,7 MB).
 
 | Área | Estado |
 |---|---|

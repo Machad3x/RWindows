@@ -49,7 +49,7 @@ surface.end()?;
 | `panel` | Roteamento comum: foco, captura, Tab, eventos (`trait Control`) |
 | `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, eventos de propriedade e fragmento das janelas popup |
 
-Única dependência: o crate `windows`. Não usa framework, webview nem GPUI.
+Dependências: `windows`, `windows-core` e `windows-numerics`. Não usa framework, webview nem GPUI.
 
 ## Decisões
 
@@ -330,11 +330,11 @@ A janela popup tem seu próprio fragmento UIA (`WM_GETOBJECT` em `popup_proc`), 
 
 ## Cache de layout de texto
 
-`Surface::text` não chama mais `DrawText` (que recriava o `IDWriteTextLayout` a cada desenho). Os layouts ficam num `HashMap` na `Surface`, com chave formato + hash FNV-1a do texto + largura/altura do retângulo + quebra de linha; o texto original é guardado junto para descartar colisões de hash. O mapa é limitado a 256 entradas para não crescer sem limite num shell de longa duração, e `text_no_wrap` serve os controles de uma linha. O cache é por `Surface` e some quando o device é recriado, o que é correto porque o DirectWrite é independente de device. Teste em `src/gfx.rs` confirma que duas chamadas com o mesmo texto produzem um layout.
+`Surface::text` não chama mais `DrawText` (que recriava o `IDWriteTextLayout` a cada desenho). Os layouts ficam num `HashMap` na `Surface`, com chave formato + hash FNV-1a do texto + largura/altura do retângulo + quebra de linha; o texto original é guardado junto para descartar colisões de hash. O mapa é limitado a 4096 entradas com evicção da mais antiga (FIFO) para não crescer sem limite nem descartar tudo ao 257º texto; `text_no_wrap` serve os controles de uma linha. O cache é por `Surface` e some quando o device é recriado, o que é correto porque o DirectWrite é independente de device. Teste em `src/gfx.rs` confirma que duas chamadas com o mesmo texto produzem um layout.
 
 ## TextBox
 
-`text_box::TextBox` guarda o conteúdo por índice de caracteres (seguro para acentos e emoji), com cursor, seleção, inserção, Backspace/Delete, setas/Home/End e Ctrl+A/C/X/V. O clipboard usa `CF_UNICODETEXT`, então copiar/colar preserva Unicode. O desenho usa `ControlFillColorDefault`, borda de 1 DIP `ControlStrokeColorDefault`, raio 4, padding 8,6, seleção em acento e caret piscando de 1 DIP. O exemplo `examples/progress.rs` aceita digitação por `WM_CHAR`; verificado com texto real.
+`text_box::TextBox` guarda o conteúdo por índice de caracteres (seguro para acentos e emoji), com cursor, seleção, inserção, Backspace/Delete e setas/Home/End; os atalhos Ctrl+A/C/X/V ficam no exemplo `examples/progress.rs`. O clipboard usa `CF_UNICODETEXT`, então copiar/colar preserva Unicode. O desenho usa `ControlFillColorDefault`, borda de 1 DIP `ControlStrokeColorDefault`, raio 4, padding 8,6, seleção em acento e caret piscando de 1 DIP. O exemplo `examples/progress.rs` aceita digitação por `WM_CHAR`; verificado com texto real.
 
 O clipboard usa um guarda que sempre fecha a clipboard, limita a varredura UTF-16 a `GlobalSize` e converte o ponteiro antes de avançar (evitando leitura desalinhada). O conteúdo é desenhado sem quebra de linha, para que caret/seleção e renderização usem a mesma geometria. Falta: preview de composição IME, seleção por arraste do mouse, menu de contexto (Cut/Copy/Paste/Select All), validação de entrada e os padrões UIA Text/Value.
 
