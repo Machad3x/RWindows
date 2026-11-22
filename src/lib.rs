@@ -7,3 +7,4 @@
 //! - [`easing`]: Win11 motion curves and durations.
 #![deny(missing_docs)]
 
+pub mod backdrop;
