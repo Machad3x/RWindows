@@ -243,8 +243,14 @@ impl Surface {
         self.stroke_with(rect, radius, width, &self.brush);
     }
 
+    /// [`snap_len`] at this surface's scale.
+    pub fn snap_len(&self, dips: f32) -> f32 {
+        snap_len(dips, self.scale())
+    }
+
     fn stroke_with(&self, rect: D2D_RECT_F, radius: f32, width: f32, brush: &ID2D1Brush) {
         let r = self.snap(rect);
+        let width = self.snap_len(width);
         let h = width / 2.0;
         let center = D2D_RECT_F { left: r.left + h, top: r.top + h, right: r.right - h, bottom: r.bottom - h };
         unsafe { self.ctx.DrawRoundedRectangle(&rounded(center, (radius - h).max(0.0)), brush, width, None) };
@@ -314,6 +320,12 @@ pub enum Edge {
     /// Bottom edge (light theme, and every `AccentControlElevationBorderBrush`:
     /// the XAML brush is flipped with `ScaleY=-1`).
     Bottom,
+}
+
+/// A length (stroke width, border thickness) in DIPs rounded to whole device
+/// pixels, at least one, like XAML layout rounding of `BorderThickness`.
+pub fn snap_len(dips: f32, scale: f32) -> f32 {
+    (dips * scale).round().max(1.0) / scale
 }
 
 /// `D2D_RECT_F` from edges.
@@ -427,6 +439,19 @@ mod tests {
     fn recreate_should_rebind_the_same_window() {
         let mut surface = Surface::new(hidden_window()).unwrap();
         assert_eq!(surface.recreate(), Ok(()));
+    }
+
+    #[test]
+    fn snap_len_should_round_to_whole_device_pixels() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+        // 1 DIP: 1 px at 100%, 1 px (0.8 DIP) at 125%, 2 px at 150%; 2 DIPs at 125% = 3 px (2.5 rounds up).
+        assert!(close(snap_len(1.0, 1.0), 1.0) && close(snap_len(1.0, 1.25), 0.8)
+            && close(snap_len(1.0, 1.5), 2.0 / 1.5) && close(snap_len(2.0, 1.25), 3.0 / 1.25));
+    }
+
+    #[test]
+    fn snap_len_should_keep_at_least_one_pixel() {
+        assert!((snap_len(0.3, 1.0) - 1.0).abs() < 1e-6);
     }
 
     #[test]

@@ -307,8 +307,10 @@ impl Button {
             // AccentButtonStyle: BackgroundSizing=OuterBorderEdge.
             s.fill_round(r, radius, background);
         } else {
-            // DefaultButtonStyle: BackgroundSizing=InnerBorderEdge.
-            s.fill_round(inset(r, BORDER), radius - BORDER, background);
+            // DefaultButtonStyle: BackgroundSizing=InnerBorderEdge. Inset by the border as
+            // actually drawn (whole device pixels) so fill and stroke meet at 125%/150%.
+            let border = s.snap_len(BORDER);
+            s.fill_round(inset(r, border), radius - border, background);
         }
         match style.border {
             Border::Elevation { edge, edge_color, rest } => s.stroke_elevation(r, radius, edge, edge_color, rest)?,
@@ -327,7 +329,8 @@ impl Button {
             // inner ring inset by the outer thickness, 1 DIP, radius reduced by 2.
             let outer = inset(r, -FOCUS_MARGIN);
             s.stroke_round(outer, radius + FOCUS_MARGIN, 2.0, t.focus_outer);
-            s.stroke_round(inset(outer, 2.0), radius + FOCUS_MARGIN - 2.0, 1.0, t.focus_inner);
+            let ring = s.snap_len(2.0);
+            s.stroke_round(inset(outer, ring), radius + FOCUS_MARGIN - 2.0, 1.0, t.focus_inner);
         }
         Ok(())
     }
