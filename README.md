@@ -191,6 +191,24 @@ Exemplo: "Modo avião" (Ativado/Desativado) numa terceira linha do `buttons`, qu
 
 Simplificações: durante o drag as cores ficam as do estado atual (no WinUI o estado `Dragging` também mantém o visual do lado de partida); sem `HeaderPlacement=Left`; o raio do anel de foco usa o mesmo ajuste do Button (+3).
 
+## Slider
+
+`slider::Slider::new(name, rect, minimum, maximum, value)` é o `Slider` horizontal do WinUI (`DefaultSliderStyle`), passo 1. É o controle de volume e brilho das Configurações rápidas.
+
+| Regra | Fonte |
+|---|---|
+| Altura 32: 14 + trilho 4 (raio 2) + 14; thumb 18 com anel visível de 22 (`Margin=-2`, raio 10) e elipse interna de 12 | `Slider_themeresources.xaml` (`SliderPre/PostContentMargin`, `SliderTrackThemeHeight`, `SliderHorizontalThumb*`, `SliderInnerThumb*`) |
+| Posição do thumb = fração × (largura − 18); o preenchimento de valor vai do início até a borda esquerda do thumb | `Slider::UpdateTrackLayout` (`multiplier * (actualWidth - thumbWidth)`) |
+| Press no trilho: captura, foco tipo ponteiro, thumb vai para o ponteiro (centro sob o cursor) e segue o mouse até soltar; press no thumb arrasta relativo, sem pulo | `OnPointerPressed` → `MoveThumbToPoint`; o `Thumb` trata o próprio press (`DragDelta`) |
+| Valor arredondado ao passo e limitado a Minimum..Maximum | `GetClosestStep` (`SliderSnapsTo_StepValues`) |
+| Setas ±1 (esquerda/baixo diminui), Home/End vão aos extremos; sem PageUp/PageDown | `SliderKeyProcess.h` |
+| Elipse interna escala 0,86 (Normal, 167 ms), 1,167 (PointerOver, 250 ms), 0,71 (Pressed, 250 ms), 1,167 (Disabled, 167 ms), curva `0,0,0,1` | `SliderThumbStyle` |
+| Pincéis: trilho `ControlStrongFillColor` Default/Disabled; valor e thumb acento ×1/0.9/0.8/disabled; anel `ControlSolidFillColorDefault` com borda de elevação | idem (tokens novos no `Theme`) |
+| Alto contraste: trilho 2 DIPs ButtonText, valor Highlight, thumb ButtonText/Highlight/HotLight/GrayText (`COLOR_HOTLIGHT` novo em `SystemColors`), anel ButtonText com borda sólida | dicionário `HighContrast` + `generic.xaml` |
+| Foco: o controle todo a `-7,0,-7,0` | `FocusVisualMargin` |
+
+Simplificações: sem header, sem marcas (`TickBar`), sem tooltip de valor, só horizontal; perder o foco encerra um press (o XAML mantém a captura); o trilho de 2 DIPs do alto contraste fica centrado na linha do thumb (no XAML fica 1 DIP acima).
+
 ## Panel (roteamento comum)
 
 `panel::Panel` guarda os controles em ordem de Tab e faz o roteamento que toda janela precisa; antes isso vivia copiado no exemplo.

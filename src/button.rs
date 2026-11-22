@@ -27,6 +27,18 @@ pub enum Key {
     Space,
     /// Enter.
     Enter,
+    /// Left arrow (Slider: one SmallChange down).
+    Left,
+    /// Right arrow (Slider: one SmallChange up).
+    Right,
+    /// Up arrow (Slider: one SmallChange up).
+    Up,
+    /// Down arrow (Slider: one SmallChange down).
+    Down,
+    /// Home (Slider: Minimum).
+    Home,
+    /// End (Slider: Maximum).
+    End,
     /// Numpad `+` (`VirtualKey_Add`: checks a CheckBox).
     Add,
     /// Numpad `-` (`VirtualKey_Subtract`: unchecks a CheckBox).
@@ -381,7 +393,10 @@ impl Button {
                     self.key_down = true;
                     self.pressed = true;
                 }
-                Key::Other | Key::Add | Key::Subtract if self.key_down => {
+                // Any non-press key cancels a held Space/Enter (ButtonBaseKeyProcess).
+                Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End | Key::Other | Key::Add | Key::Subtract
+                    if self.key_down =>
+                {
                     self.key_down = false;
                     self.pressed = false;
                 }

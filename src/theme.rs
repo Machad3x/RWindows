@@ -5,7 +5,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_WEIGHT_SEMI_BOLD,
 };
 use windows::Win32::Graphics::Gdi::{
-    COLOR_BTNFACE, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW,
+    COLOR_BTNFACE, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_HOTLIGHT, COLOR_WINDOW,
     COLOR_WINDOWTEXT, GetSysColor,
 };
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
@@ -101,6 +101,12 @@ pub struct Theme {
     pub control_strong_stroke: D2D1_COLOR_F,
     /// `ControlStrongStrokeColorDisabled`.
     pub control_strong_stroke_disabled: D2D1_COLOR_F,
+    /// `ControlStrongFillColorDefault` (Slider track).
+    pub control_strong_fill: D2D1_COLOR_F,
+    /// `ControlStrongFillColorDisabled`.
+    pub control_strong_fill_disabled: D2D1_COLOR_F,
+    /// `ControlSolidFillColorDefault` (Slider thumb ring).
+    pub control_solid_fill: D2D1_COLOR_F,
     /// The user's high contrast colors, when high contrast is on. Controls then
     /// use their `HighContrast` theme dictionary instead of the tokens above.
     pub high_contrast: Option<SystemColors>,
@@ -124,6 +130,8 @@ pub struct SystemColors {
     pub highlight_text: D2D1_COLOR_F,
     /// `COLOR_GRAYTEXT`: disabled text.
     pub gray_text: D2D1_COLOR_F,
+    /// `COLOR_HOTLIGHT`: hyperlinks, pressed Slider thumb.
+    pub hotlight: D2D1_COLOR_F,
 }
 
 impl Theme {
@@ -158,6 +166,9 @@ impl Theme {
         control_alt_fill_disabled: argb(0x00FFFFFF),
         control_strong_stroke: argb(0x8BFFFFFF),
         control_strong_stroke_disabled: argb(0x28FFFFFF),
+        control_strong_fill: argb(0x8BFFFFFF),
+        control_strong_fill_disabled: argb(0x3FFFFFFF),
+        control_solid_fill: argb(0xFF454545),
         high_contrast: None,
     };
 
@@ -192,6 +203,9 @@ impl Theme {
         control_alt_fill_disabled: argb(0x00FFFFFF),
         control_strong_stroke: argb(0x72000000),
         control_strong_stroke_disabled: argb(0x37000000),
+        control_strong_fill: argb(0x72000000),
+        control_strong_fill_disabled: argb(0x51000000),
+        control_solid_fill: argb(0xFFFFFFFF),
         high_contrast: None,
     };
 
@@ -227,6 +241,9 @@ impl Theme {
             control_alt_fill_disabled: c.button_face,
             control_strong_stroke: c.button_text,
             control_strong_stroke_disabled: c.button_text,
+            control_strong_fill: c.button_face,
+            control_strong_fill_disabled: c.button_face,
+            control_solid_fill: c.button_face,
             high_contrast: Some(c),
         }
     }
@@ -287,6 +304,7 @@ impl SystemColors {
             highlight: get(COLOR_HIGHLIGHT),
             highlight_text: get(COLOR_HIGHLIGHTTEXT),
             gray_text: get(COLOR_GRAYTEXT),
+            hotlight: get(COLOR_HOTLIGHT),
         }
     }
 }
@@ -369,6 +387,7 @@ pub(crate) mod tests {
         highlight: argb(0xFF1AEBFF),
         highlight_text: argb(0xFF000006),
         gray_text: argb(0xFF3FF207),
+        hotlight: argb(0xFF0808FF),
     };
 
     #[test]

@@ -15,6 +15,7 @@ pub mod check_box;
 pub mod easing;
 pub mod gfx;
 pub mod panel;
+pub mod slider;
 pub mod theme;
 pub mod toggle_switch;
 pub mod uia;
