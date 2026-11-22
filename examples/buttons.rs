@@ -554,9 +554,8 @@ fn main() -> Result<()> {
         // Third row: a ToggleSwitch with header (Settings style).
         let switch_text = ToggleSwitch::text_format(&surface)?;
         let (header, on, off) = ("Modo avião", "Ativado", "Desativado");
-        let (w, sh) = ToggleSwitch::desired_size(&surface, &switch_text, header, on, off)?;
         let top = top + h + GAP;
-        buttons.push(Control::Switch(Box::new(ToggleSwitch::new(header, on, off, rect(PAD, top, PAD + w, top + sh), false))));
+        buttons.push(Control::Switch(Box::new(ToggleSwitch::layout(&surface, &switch_text, header, on, off, PAD, top, false)?)));
 
         let mut app = App {
             hwnd, surface, theme, label, body, switch_text, buttons,

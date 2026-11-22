@@ -76,6 +76,9 @@ pub struct ToggleSwitch {
     pub on_content: String,
     /// `OffContent`.
     pub off_content: String,
+    /// Width of the inner Grid (track + 12 + content): the only hit-testable and
+    /// focus-target area; `rect` may be wider (`ToggleSwitchThemeMinWidth`).
+    area_width: f32,
     on: bool,
     enabled: bool,
     pointer_over: bool,
@@ -110,6 +113,7 @@ impl ToggleSwitch {
             header: header.to_owned(),
             on_content: on_content.to_owned(),
             off_content: off_content.to_owned(),
+            area_width: rect.right - rect.left,
             on,
             enabled: true,
             pointer_over: false,
@@ -134,6 +138,22 @@ impl ToggleSwitch {
         let format = surface.format(&theme::BODY)?;
         unsafe { format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)? };
         Ok(format)
+    }
+
+    /// Measured switch at (`left`, `top`): `rect` from [`ToggleSwitch::desired_size`],
+    /// hit and focus area clipped to track + 12 + the wider content, as WinUI's
+    /// left-aligned inner Grid.
+    #[expect(clippy::too_many_arguments, reason = "mirrors the XAML properties; a builder would add no clarity")]
+    pub fn layout(
+        surface: &Surface, format: &IDWriteTextFormat, header: &str, on_content: &str, off_content: &str,
+        left: f32, top: f32, on: bool,
+    ) -> Result<Self> {
+        let (w, h) = Self::desired_size(surface, format, header, on_content, off_content)?;
+        let (on_w, _) = surface.measure(on_content, format)?;
+        let (off_w, _) = surface.measure(off_content, format)?;
+        let mut s = Self::new(header, on_content, off_content, rect(left, top, left + w, top + h), on);
+        s.area_width = (TRACK_W + GAP + on_w.max(off_w)).ceil();
+        Ok(s)
     }
 
     /// Auto size: header line + 4 (when present) over a 40-DIP row; width at
@@ -184,7 +204,7 @@ impl ToggleSwitch {
     /// The 40-DIP switch row (pointer target: the `Thumb` spans it).
     fn row(&self) -> D2D_RECT_F {
         let top = self.rect.bottom - ROW;
-        rect(self.rect.left, top, self.rect.right, self.rect.bottom)
+        rect(self.rect.left, top, self.rect.left + self.area_width, self.rect.bottom)
     }
 
     /// `OuterBorder` / `SwitchKnobBounds`.
@@ -278,9 +298,10 @@ impl ToggleSwitch {
                     let k = self.knob_x.value();
                     let crossed = if self.on { k <= TRAVEL / 2.0 } else { k >= TRAVEL / 2.0 };
                     self.on ^= crossed;
-                    // Dragging -> On/Off: the state sets X with Duration 0 (snap) and
-                    // DraggingToOn/OffTransition fade the On visuals over 83 ms.
-                    self.knob_x = Tween::idle(self.rest_x());
+                    // DraggingToOn/OffTransition: RepositionThemeAnimation from
+                    // KnobCurrentToOn/OffOffset (slides from the release point) and an
+                    // 83 ms fade of the On visuals.
+                    self.knob_x.retarget(self.rest_x(), easing::REPOSITION_DURATION, easing::REPOSITION);
                     self.on_opacity.retarget(if self.on { 1.0 } else { 0.0 }, easing::FASTER, easing::LINEAR);
                 } else if self.pointer_over {
                     // Tapped.
@@ -302,10 +323,11 @@ impl ToggleSwitch {
                 self.space_down = false;
             }
             Input::CaptureLost if self.dragging => {
-                // The drag is abandoned: no toggle, the knob returns to its end.
+                // The drag is abandoned: no toggle; ClearTranslations + the Dragging -> On/Off
+                // transition slide the knob back to its end.
                 self.dragging = false;
                 self.moved = false;
-                self.knob_x = Tween::idle(self.rest_x());
+                self.knob_x.retarget(self.rest_x(), easing::REPOSITION_DURATION, easing::REPOSITION);
             }
             _ => {}
         }
@@ -322,6 +344,10 @@ impl ToggleSwitch {
     /// knob (367 ms); OffToOn fades the On visuals in over 83 ms, OnToOff snaps them.
     fn toggle(&mut self) {
         self.on = !self.on;
+        if self.dragging {
+            // OnToggledImpl skips UpdateVisualState while m_isDragging: the release decides.
+            return;
+        }
         self.knob_x.retarget(self.rest_x(), easing::REPOSITION_DURATION, easing::REPOSITION);
         if self.on {
             self.on_opacity.retarget(1.0, easing::FASTER, easing::LINEAR);
@@ -570,6 +596,41 @@ mod tests {
         s.handle(Input::CaptureLost);
         let up = s.handle(Input::PointerUp(TRACK.0 + 15.0, TRACK.1));
         assert_eq!((s.is_on(), s.visual() == Visual::Pressed, up.clicked), (false, false, false));
+    }
+
+    #[test]
+    fn drag_release_should_slide_the_knob_from_where_it_was_released() {
+        let mut s = switch(false);
+        drag(&mut s, 12.0);
+        // DraggingToOnTransition: RepositionThemeAnimation from KnobCurrentToOnOffset.
+        assert_eq!((s.knob_x.target(), s.knob_x.running()), (TRAVEL, true));
+    }
+
+    #[test]
+    fn capture_lost_should_slide_the_knob_back() {
+        let mut s = switch(false);
+        s.handle(Input::PointerDown(TRACK.0, TRACK.1));
+        s.handle(Input::PointerMove(TRACK.0 + 15.0, TRACK.1));
+        s.handle(Input::CaptureLost);
+        assert_eq!((s.knob_x.target(), s.knob_x.running()), (0.0, true));
+    }
+
+    #[test]
+    fn invoke_during_a_drag_should_leave_the_knob_under_the_pointer() {
+        let mut s = switch(false);
+        s.handle(Input::PointerDown(TRACK.0, TRACK.1));
+        s.handle(Input::PointerMove(TRACK.0 + 8.0, TRACK.1));
+        s.invoke();
+        // OnToggledImpl skips UpdateVisualState while m_isDragging.
+        assert_eq!((s.is_on(), s.knob_x.value()), (true, 8.0));
+    }
+
+    #[test]
+    fn hit_area_should_end_after_the_content_not_at_the_min_width() {
+        let mut s = switch(false);
+        s.area_width = TRACK_W + GAP + 60.0;
+        let r = s.handle(Input::PointerDown(140.0, TRACK.1));
+        assert_eq!((r, s.focus_target().right), (Response::default(), 112.0));
     }
 
     #[test]
