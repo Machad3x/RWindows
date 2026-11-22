@@ -47,7 +47,7 @@ surface.end()?;
 | `text_box` | TextBox de uma linha: cursor, seleção, clipboard Unicode e placeholder |
 | `icons` | Ícones reais do Windows via `IShellItemImageFactory`, convertidos em bitmap D2D e cacheados por caminho/tamanho |
 | `panel` | Roteamento comum: foco, captura, Tab, eventos (`trait Control`) |
-| `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, e eventos de propriedade |
+| `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, eventos de propriedade e fragmento das janelas popup |
 
 Única dependência: o crate `windows`. Não usa framework, webview nem GPUI.
 
@@ -320,6 +320,10 @@ O presenter está implementado em `ListView::draw` com os pincéis acima (inclui
 
 Falta: barra de rolagem desenhada, PageUp/PageDown, seleção múltipla, arrastar, agrupamento/cabeçalhos, `GridView`, transições de seleção e UIA (SelectionItem/Selection pattern).
 
+## UIA de popups
+
+A janela popup tem seu próprio fragmento UIA (`WM_GETOBJECT` em `popup_proc`), com o modelo mantido fora do `APP` para chamadas reentrantes. No MenuFlyout, cada `MenuFlyoutItem` aparece como `MenuItem` com `Name` e `IsEnabled` corretos; `Invoke` roteia para o item pelo índice real (separadores não são expostos) e fecha o menu, e `HasKeyboardFocus` acompanha a navegação. Verificado com cliente .NET UIAutomation real: 4 itens encontrados, estados corretos e `Invoke` em "Copiar" produziu "Clicou: Copiar". Falta expor os controles do flyout de conteúdo (ToggleSwitch/Slider), a dica do ToolTip e o padrão SelectionItem.
+
 ## Ícones reais
 
 `icons::IconCache` chama `SHCreateItemFromParsingName` + `IShellItemImageFactory::GetImage` com `SIIGBF_ICONONLY`, lê o `BITMAP` retornado e cria um `ID2D1Bitmap1` com `CreateBitmap` (BGRA8 pré-multiplicado). Os bitmaps ficam em cache por `(caminho, tamanho em pixels)` e são descartados com `clear()` quando o device é recriado. No exemplo `examples/progress.rs` o ícone do `notepad.exe` aparece no canto superior direito — verificado na máquina real (Windows 26H2). Limite: sem `SIIGBF_SCALEUP`, sem ícones de pastas virtuais e sem redimensionamento suave (o cache é por tamanho exato).
@@ -445,7 +449,8 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 - [x] Narrador: com o `buttons` aberto, Tab por todos os controles e Espaço nos de alternar funcionaram (relato do usuário, 2026-11-22; sem transcrição da fala). NVDA não testado
 - [x] Texto sem alocação no heap por frame: rótulos de até 128 unidades UTF-16 são codificados na pilha (`with_wide`); só textos maiores alocam
 - [x] Slider, CheckBox de três estados, `Panel`, Flyout (com popup acrílico, animação do sistema e light dismiss), MenuFlyout (itens, atalhos, teclado), ToolTip (timers do sistema, fade)
-- [ ] Teste com NVDA; UIA do conteúdo de flyouts e popups; cache do layout de texto
+- [x] UIA do conteúdo de popups (MenuFlyout como MenuItem, verificado com cliente .NET); cache do layout de texto
+- [ ] Teste com NVDA — bloqueado: não instalado nesta máquina (instalação exige autorização)
 - [ ] Tudo o que falta para substituir o `explorer.exe` (TextBox, ListView, ícones, barra de tarefas, Iniciar, bandeja, desktop): ver o [ROADMAP.md](ROADMAP.md)
 - Fora do escopo: Mica no Win10/Win11 21H2 (a meta é o Win11 atual)
 

@@ -135,6 +135,11 @@ impl MenuFlyout {
         self.size
     }
 
+    /// Entry with keyboard/pointer highlight, if any.
+    pub fn focused(&self) -> Option<usize> {
+        self.hot
+    }
+
     /// Text of entry `index`, if it is an item.
     pub fn text(&self, index: usize) -> Option<&str> {
         match self.entries.get(index) {

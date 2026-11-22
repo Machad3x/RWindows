@@ -36,7 +36,8 @@ use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     IRawElementProviderSimple, ToggleState, ToggleState_Indeterminate, ToggleState_On,
     UIA_AutomationFocusChangedEventId, UIA_BoundingRectanglePropertyId, UIA_EVENT_ID, UIA_Invoke_InvokedEventId,
-    UIA_RangeValueValuePropertyId, UIA_ToggleToggleStatePropertyId, UiaClientsAreListening, UiaRaiseAutomationEvent,
+    UIA_MenuItemControlTypeId, UIA_RangeValueValuePropertyId, UIA_ToggleToggleStatePropertyId,
+    UiaClientsAreListening, UiaRaiseAutomationEvent,
     UiaRaiseAutomationPropertyChangedEvent, UiaReturnRawElementProvider, UiaRootObjectId,
 };
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -113,6 +114,8 @@ struct Popup {
     closing: bool,
     /// True when the DWM acrylic backdrop is active (else the fallback color fills).
     backdrop: bool,
+    /// UIA child index → menu entry index (separators are not exposed).
+    ui_to_menu: Vec<usize>,
 }
 
 /// What a popup hosts: a content flyout, a menu or a tooltip.
@@ -167,6 +170,8 @@ thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
     /// Kept outside APP: WM_GETOBJECT can arrive while APP is borrowed.
     static UIA: RefCell<Option<uia::Shared>> = const { RefCell::new(None) };
+    /// UIA model of the popup window (flyout/menu contents).
+    static POPUP_UIA: RefCell<Option<uia::Shared>> = const { RefCell::new(None) };
 }
 
 impl App {
@@ -469,8 +474,31 @@ impl App {
         };
         let backdrop = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, self.theme.dark).is_ok();
         let surface = Surface::new(hwnd)?;
+        let (uia_items, ui_to_menu, focused) = match &content {
+            Content::Menu(menu) => {
+                let mut items = Vec::new();
+                let mut map = Vec::new();
+                let mut focused = None;
+                for (i, entry) in menu.entries.iter().enumerate() {
+                    if let Entry::Item(item) = entry {
+                        map.push(i);
+                        if menu.focused() == Some(i) {
+                            focused = Some(map.len() - 1);
+                        }
+                        items.push(uia::Item {
+                            name: item.text.clone(), rect: menu.rects[i], enabled: item.enabled,
+                            toggle: None, control_type: UIA_MenuItemControlTypeId, range: None,
+                        });
+                    }
+                }
+                (items, map, focused)
+            }
+            _ => (Vec::new(), Vec::new(), None),
+        };
+        let model = Rc::new(RefCell::new(uia::Model { hwnd, scale: k, items: uia_items, focused }));
+        POPUP_UIA.with(|cell| *cell.borrow_mut() = Some(model));
         self.popup = Some(Popup {
-            hwnd, surface, content, size, origin, transition, closing: false, backdrop,
+            hwnd, surface, content, size, origin, transition, closing: false, backdrop, ui_to_menu,
         });
         if !tip {
             // Keyboard focus moves into the popup; the WM_KILLFOCUS that ShowWindow sends
@@ -546,6 +574,12 @@ impl App {
                 let out = menu.handle(input);
                 let close = out.invoked.is_some();
                 let status = out.invoked.map(|i| format!("Clicou: {}", menu.text(i).unwrap_or_default()));
+                let focused = p.ui_to_menu.iter().position(|&m| Some(m) == menu.focused());
+                POPUP_UIA.with(|u| {
+                    if let Some(model) = u.borrow().as_ref() {
+                        model.borrow_mut().focused = focused;
+                    }
+                });
                 (out.capture, out.redraw, status, close)
             }
             // Click-through: a tooltip never receives pointer or keyboard input.
@@ -662,6 +696,33 @@ extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             a.close_popup();
             Ok(())
         }),
+        // Popup contents are a separate UIA fragment root hosted by this HWND.
+        WM_GETOBJECT if lp.0 as i32 == UiaRootObjectId => {
+            let root = POPUP_UIA.with(|u| u.borrow().as_ref().map(uia::root));
+            if let Some(root) = root {
+                return unsafe { UiaReturnRawElementProvider(hwnd, wp, lp, &root) };
+            }
+        }
+        WM_UIA_INVOKE => {
+            with_app_or_repost(hwnd, msg, wp, |a| {
+            let (pressed, released) = {
+                let Some(p) = a.popup.as_ref() else { return Ok(()) };
+                let Some(&menu_index) = p.ui_to_menu.get(wp.0) else { return Ok(()) };
+                let r = match &p.content {
+                    Content::Menu(menu) => menu.rects[menu_index],
+                    _ => return Ok(()),
+                };
+                let (x, y) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+                (Input::PointerDown(x, y), Input::PointerUp(x, y))
+            };
+            a.popup_input(pressed)?;
+            a.popup_input(released)
+            });
+        }
+        WM_DESTROY => unsafe {
+            UiaReturnRawElementProvider(hwnd, WPARAM(0), LPARAM(0), None::<&IRawElementProviderSimple>);
+            POPUP_UIA.with(|cell| drop(cell.borrow_mut().take()));
+        },
         _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
     LRESULT(0)

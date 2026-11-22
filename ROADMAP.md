@@ -40,9 +40,9 @@ O shell precisa disto antes de existir. Ordem sugerida (cada item: TDD, README, 
 - [x] **TextBox** (busca do Iniciar): cursor, seleção, clipboard Unicode, setas/Home/End, Ctrl+A/C/X/V, placeholder e caret; exemplo `examples/progress.rs` verificado com digitação real. Falta preview de IME, arraste de seleção, menu de contexto e UIA Text/Value.
 - [x] **RadioButton, ProgressRing, ProgressBar**: estilos oficiais, grupo de seleção única, anel determinado/indeterminado e exemplo `examples/progress.rs` verificado visualmente. Faltam animações do glifo, estados Paused/Error e UIA.
 - [x] **Ícones reais**: `icons::IconCache` extrai com `IShellItemImageFactory`/`GetImage`, cria bitmap D2D e cacheia por caminho+tamanho; ícone do notepad verificado no `examples/progress.rs`. Falta SCALEUP, pastas virtuais e redimensionamento suave.
-- [ ] **UIA do conteúdo de flyouts e popups** (o Narrador hoje não lê o que está dentro).
+- [x] **UIA do conteúdo de popups**: fragmento próprio na janela popup, itens do MenuFlyout como MenuItem (Name/IsEnabled/foco) e Invoke verificado com cliente .NET real. Falta o flyout de conteúdo (ToggleSwitch/Slider), o ToolTip e SelectionItem.
 - [x] **Cache do layout de texto** (`IDWriteTextLayout`): `Surface::text` reutiliza layouts por formato/texto/tamanho, com verificação de colisão e teste.
-- [ ] **Teste com NVDA**.
+- [ ] **Teste com NVDA** — bloqueado: NVDA não está instalado nesta máquina e instalar software de terceiros exige autorização. O equivalente disponível (.NET UIAutomation) já validou Invoke/Toggle/RangeValue, eventos e o fragmento dos popups.
 
 ---
 
