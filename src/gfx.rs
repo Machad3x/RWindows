@@ -28,7 +28,8 @@ use windows::Win32::Graphics::DirectComposition::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_AUTOMATIC_FONT_AXES_OPTICAL_SIZE, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_AXIS_TAG_WEIGHT,
     DWRITE_FONT_AXIS_VALUE,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_TEXT_METRICS, DWriteCreateFactory, IDWriteFactory6, IDWriteTextFormat,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_LEADING,
+    DWRITE_TEXT_METRICS, DWriteCreateFactory, IDWriteFactory6, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
@@ -255,6 +256,10 @@ impl Surface {
         let mut m = DWRITE_TEXT_METRICS::default();
         unsafe {
             let layout = self.dwrite.CreateTextLayout(&wide, format, f32::MAX, f32::MAX)?;
+            // Centered alignment in an f32::MAX box puts the text at MAX/2, where f32
+            // precision collapses the width to 0: measure leading/near (layout only).
+            layout.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
             layout.GetMetrics(&mut m)?;
         }
         Ok((m.widthIncludingTrailingWhitespace, m.height))
@@ -390,6 +395,21 @@ mod tests {
         let (short, h) = surface.measure("Ok", &body).unwrap();
         let (long, _) = surface.measure("Configurações", &body).unwrap();
         assert!(short > 0.0 && long > short && (h - 18.62).abs() < 0.05, "{short} {long} {h}");
+    }
+
+    #[test]
+    fn measure_should_not_depend_on_text_alignment() {
+        use windows::Win32::Graphics::DirectWrite::{DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER};
+        let surface = Surface::new(hidden_window()).unwrap();
+        let left = surface.format(&theme::BODY).unwrap();
+        let centered = surface.format(&theme::BODY).unwrap();
+        unsafe {
+            centered.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).unwrap();
+            centered.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).unwrap();
+        }
+        let a = surface.measure("Configurações", &left).unwrap();
+        let b = surface.measure("Configurações", &centered).unwrap();
+        assert!((a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01, "{a:?} {b:?}");
     }
 
     #[test]
