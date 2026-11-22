@@ -88,6 +88,8 @@ pub struct Response {
     pub capture: Option<bool>,
     /// The button wants keyboard focus (pointer press): blur the others.
     pub take_focus: bool,
+    /// The button dropped focus (it was disabled): move focus elsewhere.
+    pub lost_focus: bool,
 }
 
 /// Border of one visual state.
@@ -211,11 +213,13 @@ impl Button {
         self.enabled = enabled;
         self.pressed = false;
         self.pointer_over = false;
+        // A disabled control takes no input, so a keyboard ring on it would be a dead end: drop focus, the caller moves it.
+        let lost_focus = !enabled && self.focus.take().is_some();
         if !enabled {
             self.left_down = false;
             self.key_down = false;
         }
-        Response { capture, ..self.changed(before) }
+        Response { capture, lost_focus, ..self.changed(before) }
     }
 
     /// Feeds one input event.
@@ -524,6 +528,21 @@ mod tests {
         b.set_enabled(false);
         b.set_enabled(true);
         assert_eq!(b.visual(), Visual::Rest);
+    }
+
+    #[test]
+    fn disabling_a_focused_button_should_drop_focus() {
+        let mut b = focused(FocusKind::Keyboard);
+        let r = b.set_enabled(false);
+        b.set_enabled(true);
+        // Re-enabling must not bring the keyboard ring back unasked.
+        assert_eq!((r.lost_focus, b.focus_visible()), (true, false));
+    }
+
+    #[test]
+    fn disabling_an_unfocused_button_should_not_report_lost_focus() {
+        let mut b = button();
+        assert!(!b.set_enabled(false).lost_focus);
     }
 
     #[test]
