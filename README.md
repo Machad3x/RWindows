@@ -42,6 +42,8 @@ surface.end()?;
 | `tooltip` | `ToolTip` com atraso e duração do sistema, posicionamento sobre o ponteiro e fade |
 | `list_view` | Núcleo virtualizado de `ListView`: só as linhas visíveis (mais overscan) são medidas e posicionadas |
 | `scroll_viewer` | Barra vertical do Win11: thumb 8×30, raio 3, `ControlStrongFillColorDefault`, arraste e page up/down |
+| `radio_button` | RadioButton do Win11 com grupo de seleção única e glifo 12/14/10 |
+| `progress` | ProgressBar (trilho 1 DIP) e ProgressRing (traço 4 DIPs, determinado/indeterminado) |
 | `panel` | Roteamento comum: foco, captura, Tab, eventos (`trait Control`) |
 | `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, e eventos de propriedade |
 
@@ -315,6 +317,12 @@ Exemplo: "Configurações", "Salvar", "Wi-Fi", "Mais opções" e "Menu" têm dic
 O presenter está implementado em `ListView::draw` com os pincéis acima (incluindo o indicador de seleção de 4 DIPs em `AccentFillColorDefault`), e `ListView::handle` cobre ponteiro, foco e setas/Home/End. O exemplo `examples/list.rs` mostra 500 itens, seleção por clique/teclado e rolagem de 3 linhas por notch da roda; `Surface::with_clip` recorta o desenho ao viewport, como um `ScrollViewer`. Verificado visualmente no Windows real: linhas de 40 DIPs, hover/seleção discretos e nenhum vazamento para a área de status.
 
 Falta: barra de rolagem desenhada, PageUp/PageDown, seleção múltipla, arrastar, agrupamento/cabeçalhos, `GridView`, transições de seleção e UIA (SelectionItem/Selection pattern).
+
+## RadioButton, ProgressBar e ProgressRing
+
+`radio_button::RadioButton` segue o `DefaultRadioButtonStyle`: elipse 20, glifo 12 (14 no hover, 10 no pressed), linha 32, padding 8,6 e largura mínima 120. `check_one()` mantém a seleção única do grupo. `progress::ProgressBar` usa trilho de 1 DIP em `ControlStrongStrokeColorDefault` e preenchimento `AccentFillColorDefault`, com altura mínima 3 e raio 1,5/0,5. `progress::ProgressRing` desenha o arco indeterminado (≈300°) com `AccentFillColorDefault` e traço de 4 DIPs; o tempo vem do app, então não há frames extras quando nada muda. O exemplo `examples/progress.rs` mostra os três controles; verificado visualmente (clique troca o rádio do grupo, barra em 60%, anel animado).
+
+Falta: animações de contração do glifo, `Paused`/`Error` do ProgressBar e UIA (RadioButton/SelectionItem, RangeValue/Value).
 
 ## ScrollViewer
 

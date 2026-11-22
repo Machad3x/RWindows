@@ -19,6 +19,8 @@ pub mod layout;
 pub mod list_view;
 pub mod menu_flyout;
 pub mod panel;
+pub mod progress;
+pub mod radio_button;
 pub mod scroll_viewer;
 pub mod slider;
 pub mod theme;

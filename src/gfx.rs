@@ -325,6 +325,22 @@ impl Surface {
         Ok(())
     }
 
+    /// Strokes part of a circle in DIPs (used by `ProgressRing`). Angles are radians.
+    #[expect(clippy::too_many_arguments, reason = "mirrors the geometry of a Direct2D arc")]
+    pub fn stroke_arc(&self, cx: f32, cy: f32, radius: f32, from: f32, to: f32, width: f32, color: D2D1_COLOR_F) {
+        let steps = (((to - from).abs() / 0.12).ceil() as usize).max(2);
+        unsafe {
+            self.brush.SetColor(&color);
+            for i in 0..steps {
+                let a0 = from + (to - from) * i as f32 / steps as f32;
+                let a1 = from + (to - from) * (i + 1) as f32 / steps as f32;
+                let p0 = Vector2::new(cx + radius * a0.cos(), cy + radius * a0.sin());
+                let p1 = Vector2::new(cx + radius * a1.cos(), cy + radius * a1.sin());
+                self.ctx.DrawLine(p0, p1, &self.brush, width, None);
+            }
+        }
+    }
+
     /// Clips everything `f` draws to `clip` (D2D's `PushAxisAlignedClip`), e.g.
     /// a `ScrollViewer` viewport. Coordinates are DIPs in this surface's space.
     pub fn with_clip(&self, clip: D2D_RECT_F, f: impl FnOnce(&Self)) {
