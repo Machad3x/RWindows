@@ -2,7 +2,7 @@
 
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+    DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_WEIGHT_SEMI_BOLD,
 };
 use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
@@ -105,27 +105,45 @@ impl Theme {
     }
 }
 
-/// One step of the WinUI type ramp.
+/// Typographic family used by WinUI (`XamlAutoFontFamily` resolves to it).
+/// One variable font; the optical-size instance (Small/Text/Display) is picked
+/// from the font size, as XAML does (see [`crate::gfx::Surface::format`]).
+pub const FAMILY: PCWSTR = w!("Segoe UI Variable");
+
+/// One step of the WinUI type ramp (`TextBlock_themeresources.xaml`).
+///
+/// WinUI styles set no `LineHeight`: lines use the font's own metrics
+/// (`LineStackingStrategy=MaxHeight`), so neither does this crate.
 #[derive(Clone, Copy, Debug)]
 pub struct Ramp {
-    /// Font family (Segoe UI Variable optical-size instance).
-    pub family: PCWSTR,
     /// Size in DIPs.
     pub size: f32,
-    /// Weight.
-    pub weight: DWRITE_FONT_WEIGHT,
+    /// Weight (`wght` axis value: 400 regular, 600 semibold).
+    pub weight: f32,
 }
 
-/// `CaptionTextBlockStyle`: 12 regular.
-pub const CAPTION: Ramp = Ramp { family: w!("Segoe UI Variable Small"), size: 12.0, weight: DWRITE_FONT_WEIGHT_REGULAR };
-/// `BodyTextBlockStyle`: 14 regular.
-pub const BODY: Ramp = Ramp { family: w!("Segoe UI Variable Text"), size: 14.0, weight: DWRITE_FONT_WEIGHT_REGULAR };
-/// `BodyStrongTextBlockStyle`: 14 semibold.
-pub const BODY_STRONG: Ramp = Ramp { family: w!("Segoe UI Variable Text"), size: 14.0, weight: DWRITE_FONT_WEIGHT_SEMI_BOLD };
-/// `SubtitleTextBlockStyle`: 20 semibold.
-pub const SUBTITLE: Ramp = Ramp { family: w!("Segoe UI Variable Display"), size: 20.0, weight: DWRITE_FONT_WEIGHT_SEMI_BOLD };
-/// `TitleTextBlockStyle`: 28 semibold.
-pub const TITLE: Ramp = Ramp { family: w!("Segoe UI Variable Display"), size: 28.0, weight: DWRITE_FONT_WEIGHT_SEMI_BOLD };
+const REGULAR: f32 = DWRITE_FONT_WEIGHT_REGULAR.0 as f32;
+const SEMIBOLD: f32 = DWRITE_FONT_WEIGHT_SEMI_BOLD.0 as f32;
+
+/// `CaptionTextBlockStyle`: 12 regular (design line height 16).
+pub const CAPTION: Ramp = Ramp { size: 12.0, weight: REGULAR };
+/// `BodyTextBlockStyle`: 14 regular (design line height 20).
+pub const BODY: Ramp = Ramp { size: 14.0, weight: REGULAR };
+/// `BodyStrongTextBlockStyle`: 14 semibold (design line height 20).
+pub const BODY_STRONG: Ramp = Ramp { size: 14.0, weight: SEMIBOLD };
+/// `BodyLargeTextBlockStyle`: 18 regular (design line height 24).
+pub const BODY_LARGE: Ramp = Ramp { size: 18.0, weight: REGULAR };
+/// `SubtitleTextBlockStyle`: 20 semibold (design line height 28).
+pub const SUBTITLE: Ramp = Ramp { size: 20.0, weight: SEMIBOLD };
+/// `TitleTextBlockStyle`: 28 semibold (design line height 36).
+pub const TITLE: Ramp = Ramp { size: 28.0, weight: SEMIBOLD };
+/// `TitleLargeTextBlockStyle`: 40 semibold (design line height 52).
+pub const TITLE_LARGE: Ramp = Ramp { size: 40.0, weight: SEMIBOLD };
+/// `DisplayTextBlockStyle`: 68 semibold (design line height 92).
+pub const DISPLAY: Ramp = Ramp { size: 68.0, weight: SEMIBOLD };
+
+/// Every ramp step, smallest first.
+pub const RAMP: [Ramp; 8] = [CAPTION, BODY, BODY_STRONG, BODY_LARGE, SUBTITLE, TITLE, TITLE_LARGE, DISPLAY];
 
 fn reg_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
     let mut value = 0u32;

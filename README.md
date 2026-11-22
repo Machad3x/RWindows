@@ -48,6 +48,25 @@ Cada decisão registra o motivo e a fonte. "Não verificado" quer dizer que vem 
 | Tokens de cor com os nomes das chaves do WinUI | Rastreabilidade: cada valor tem nome oficial | [`Common_themeresources_any.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/Common_themeresources_any.xaml) |
 | Durações 83/167/250 ms, curva `0,0,0,1` | `ControlFaster/Fast/NormalAnimationDuration`, `ControlFastOutSlowInKeySpline` | WinUI `Common_themeresources_any.xaml` |
 | Idle bloqueado em `GetMessageW` e frames só com animação ativa | 0% de CPU parado | Medido |
+| Fonte: família tipográfica `Segoe UI Variable` via `IDWriteFactory6`, com `DWRITE_AUTOMATIC_FONT_AXES_OPTICAL_SIZE` e peso pelo eixo `wght` | É o que o XAML faz: `XamlAutoFontFamily` e tamanho óptico automático. Os nomes WWS ("… Small/Text/Display") eram uma aproximação | [Typography in Windows](https://learn.microsoft.com/windows/apps/design/signature-experiences/typography), [DWRITE_AUTOMATIC_FONT_AXES](https://learn.microsoft.com/windows/win32/api/dwrite_3/ne-dwrite_3-dwrite_automatic_font_axes), [CreateTextFormat (Factory6)](https://learn.microsoft.com/windows/win32/api/dwrite_3/nf-dwrite_3-idwritefactory6-createtextformat) |
+| **Sem** `LineHeight` forçado: a linha usa as métricas naturais da fonte | Os estilos do WinUI não definem `LineHeight` (só `LineStackingStrategy=MaxHeight`), então o Win11 real usa a altura natural. Os valores 16/20/28… são da especificação de design | [`TextBlock_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/TextBlock_themeresources.xaml), [LineStackingStrategy](https://learn.microsoft.com/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.linestackingstrategy) |
+
+## Tipografia
+
+Altura de linha natural medida pelo teste `every_ramp_step_should_have_a_natural_line_taller_than_its_size` (`cargo test -- --nocapture`), comparada com a especificação de design:
+
+| Estilo | Tamanho | Peso | Linha natural (WinUI real) | Linha no design | Baseline |
+|---|---|---|---|---|---|
+| Caption | 12 | 400 | 15.96 | 16 | 12.95 |
+| Body | 14 | 400 | 18.62 | 20 | 15.11 |
+| Body Strong | 14 | 600 | 18.62 | 20 | 15.11 |
+| Body Large | 18 | 400 | 23.94 | 24 | 19.42 |
+| Subtitle | 20 | 600 | 26.60 | 28 | 21.58 |
+| Title | 28 | 600 | 37.24 | 36 | 30.21 |
+| Title Large | 40 | 600 | 53.20 | 52 | 43.16 |
+| Display | 68 | 600 | 90.45 | 92 | 73.38 |
+
+Não verificado: a comparação pixel a pixel com um `TextBlock` do WinUI renderizado. O Learn não documenta onde o XAML posiciona a baseline dentro da linha.
 
 ## Medições
 
@@ -64,7 +83,7 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo.
 
 ## Pendências
 
-- [ ] Line height do type ramp (WinUI 16/20/28/36…)
+- [x] Line height do type ramp: resolvido seguindo o WinUI, que não força `LineHeight` (ver Tipografia)
 - [ ] Acento e tema por API documentada (hoje lê `AccentPalette` do registro, que não é documentado)
 - [ ] Recuperar device perdido (reset de GPU, troca de driver, RDP)
 - [ ] Uma alocação UTF-16 por texto por frame

@@ -25,8 +25,9 @@ use windows::Win32::Graphics::DirectComposition::{
     DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_MEASURING_MODE_NATURAL, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    DWRITE_AUTOMATIC_FONT_AXES_OPTICAL_SIZE, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_AXIS_TAG_WEIGHT,
+    DWRITE_FONT_AXIS_VALUE,
+    DWRITE_MEASURING_MODE_NATURAL, DWriteCreateFactory, IDWriteFactory6, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
@@ -41,14 +42,14 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{Error, Interface, Result, w};
 
-use crate::theme::Ramp;
+use crate::theme::{self, Ramp};
 
 const TRANSPARENT: D2D1_COLOR_F = D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
 
 /// A window's drawing surface. Coordinates are DIPs (1/96 inch).
 pub struct Surface {
     ctx: ID2D1DeviceContext,
-    dwrite: IDWriteFactory,
+    dwrite: IDWriteFactory6,
     brush: ID2D1SolidColorBrush,
     swap: IDXGISwapChain1,
     _dcomp: IDCompositionDevice,
@@ -167,12 +168,10 @@ impl Surface {
         &self.ctx
     }
 
-    /// Text format for a type-ramp step.
+    /// Text format for a type-ramp step. Matches XAML: typographic family
+    /// `Segoe UI Variable`, optical size chosen automatically from the size.
     pub fn format(&self, ramp: &Ramp) -> Result<IDWriteTextFormat> {
-        unsafe {
-            self.dwrite.CreateTextFormat(ramp.family, None, ramp.weight, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, ramp.size, w!(""))
-        }
+        text_format(&self.dwrite, ramp)
     }
 
     /// Starts a frame and clears to transparent (backdrop shows through).
@@ -244,6 +243,16 @@ fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
     D2D1_ROUNDED_RECT { rect, radiusX: radius, radiusY: radius }
 }
 
+fn text_format(dwrite: &IDWriteFactory6, ramp: &Ramp) -> Result<IDWriteTextFormat> {
+    let axes = [DWRITE_FONT_AXIS_VALUE { axisTag: DWRITE_FONT_AXIS_TAG_WEIGHT, value: ramp.weight }];
+    unsafe {
+        // Null collection = system collection grouped by typographic family (IDWriteFactory6).
+        let format = dwrite.CreateTextFormat(theme::FAMILY, None, &axes, ramp.size, w!(""))?;
+        format.SetAutomaticFontAxes(DWRITE_AUTOMATIC_FONT_AXES_OPTICAL_SIZE)?;
+        format.cast()
+    }
+}
+
 fn d3d_device(driver: D3D_DRIVER_TYPE) -> Result<ID3D11Device> {
     let mut d3d = None;
     unsafe {
@@ -260,4 +269,46 @@ fn client_px(hwnd: HWND) -> Result<(u32, u32)> {
     let mut r = RECT::default();
     unsafe { GetClientRect(hwnd, &mut r)? };
     Ok(((r.right - r.left).max(1) as u32, (r.bottom - r.top).max(1) as u32))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Graphics::DirectWrite::{DWRITE_FONT_FAMILY_MODEL_TYPOGRAPHIC, DWRITE_LINE_METRICS};
+
+    /// Natural line height and baseline of one ramp step, as DirectWrite lays it out.
+    fn line_metrics(ramp: &Ramp) -> (f32, f32) {
+        unsafe {
+            let dwrite: IDWriteFactory6 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
+            let format = text_format(&dwrite, ramp).unwrap();
+            let text: Vec<u16> = "Ag".encode_utf16().collect();
+            let layout = dwrite.CreateTextLayout(&text, &format, 1000.0, 1000.0).unwrap();
+            let mut m = [DWRITE_LINE_METRICS::default()];
+            let mut n = 0;
+            layout.GetLineMetrics(Some(&mut m), &mut n).unwrap();
+            (m[0].height, m[0].baseline)
+        }
+    }
+
+    #[test]
+    fn system_collection_should_have_typographic_segoe_ui_variable() {
+        let exists = unsafe {
+            let dwrite: IDWriteFactory6 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
+            let fonts = dwrite.GetSystemFontCollection(false, DWRITE_FONT_FAMILY_MODEL_TYPOGRAPHIC).unwrap();
+            let (mut index, mut exists) = (0, windows::core::BOOL(0));
+            fonts.FindFamilyName(theme::FAMILY, &mut index, &mut exists).unwrap();
+            exists
+        };
+        assert!(exists.as_bool());
+    }
+
+    #[test]
+    fn every_ramp_step_should_have_a_natural_line_taller_than_its_size() {
+        // Prints the natural metrics documented in the README (cargo test -- --nocapture).
+        for ramp in theme::RAMP {
+            let (height, baseline) = line_metrics(&ramp);
+            println!("size {:>4} weight {} -> line {height:.2} baseline {baseline:.2}", ramp.size, ramp.weight);
+            assert!(height > ramp.size && baseline < height);
+        }
+    }
 }
