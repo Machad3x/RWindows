@@ -105,6 +105,9 @@ Com alto contraste ligado, `Theme::system()` devolve `Theme::high_contrast(Syste
 | Tabela acima: dicionário `HighContrast` do Button, com cada `SystemControl*Brush` resolvido pelo `generic.xaml` do framework (por exemplo `SystemControlHighlightBaseHighBrush` = Highlight) | [`Button_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/Button_themeresources.xaml), [`generic.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/dxaml/xcp/dxaml/themes/generic.xaml) |
 | Tokens comuns (texto = WindowText, desabilitado = GrayText, cartão = Window, borda = ButtonText) e foco: externo WindowText, interno Window | `Common_themeresources_any.xaml` e `Common_themeresources.xaml` (`SystemControlFocusVisual*` → `FocusStrokeColor*`), dicionário `HighContrast` |
 | `Theme::dark` no alto contraste = fundo Window escuro (`IsColorLight`) | Inferência: decide o modo escuro do DWM na barra de título |
+| Exemplo: com alto contraste, pinta a área cliente com Window (opaca, sem Mica) e relê o tema em `WM_SYSCOLORCHANGE` e em `WM_SETTINGCHANGE` com `SPI_SETHIGHCONTRAST` ou `ImmersiveColorSet` | `SolidBackgroundFillColorBase` = Window no dicionário `HighContrast`; [High contrast parameter](https://learn.microsoft.com/windows/win32/winauto/high-contrast-parameter) |
+
+Verificado: desenho com uma paleta HC forçada (preto, branco, Highlight lilás), igual à tabela. Não verificado: ligar o alto contraste de verdade com o exemplo aberto (detecção e troca ao vivo).
 
 Pendente: `AnimatedIcon`.
 

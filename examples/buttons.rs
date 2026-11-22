@@ -34,6 +34,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
     LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
+    SPI_SETHIGHCONTRAST, WM_SYSCOLORCHANGE,
     SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, TranslateMessage, WM_CAPTURECHANGED, WM_DESTROY,
     WM_DPICHANGED, WM_GETOBJECT,
     WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
@@ -71,6 +72,11 @@ impl App {
         self.sync_uia();
         let (s, t) = (&mut self.surface, &self.theme);
         s.begin();
+        if let Some(c) = t.high_contrast {
+            // HighContrast SolidBackgroundFillColorBase = Window: opaque page, no Mica.
+            let (w, h) = s.size();
+            s.fill_round(rect(0.0, 0.0, w, h), 0.0, c.window);
+        }
         for b in &self.buttons {
             b.draw(s, t, &self.label)?;
         }
@@ -314,10 +320,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     SWP_NOZORDER | SWP_NOACTIVATE);
             }
         }
-        WM_SETTINGCHANGE
-            if lp.0 != 0
-                && unsafe { PCWSTR(lp.0 as *const u16).to_string() }
-                    .is_ok_and(|s| s == "ImmersiveColorSet") =>
+        // Theme or accent changed (ImmersiveColorSet), high contrast toggled
+        // (SPI_SETHIGHCONTRAST), or system colors changed (WM_SYSCOLORCHANGE, Learn:
+        // "High contrast parameter").
+        WM_SYSCOLORCHANGE | WM_SETTINGCHANGE
+            if msg == WM_SYSCOLORCHANGE
+                || wp.0 == SPI_SETHIGHCONTRAST.0 as usize
+                || lp.0 != 0
+                    && unsafe { PCWSTR(lp.0 as *const u16).to_string() }
+                        .is_ok_and(|s| s == "ImmersiveColorSet") =>
         {
             with_app(|a| {
                 a.theme = Theme::system();
