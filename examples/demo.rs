@@ -215,6 +215,17 @@ fn main() -> Result<()> {
         app.render()?;
         APP.with(|cell| *cell.borrow_mut() = Some(app));
 
+        let result = message_loop();
+        // Release GPU objects while the process is still running: dropped later, in
+        // thread-local teardown, they turned the exit code into a DXGI HRESULT (0x87A).
+        APP.with(|cell| drop(cell.borrow_mut().take()));
+        result
+    }
+}
+
+/// Pumps messages until WM_QUIT; renders frames only while a transition runs.
+fn message_loop() -> Result<()> {
+    unsafe {
         let mut msg = MSG::default();
         let mut was_animating = false;
         loop {
