@@ -192,16 +192,25 @@ impl Surface {
         }
     }
 
-    /// Fills a rounded rectangle.
+    /// Rounds edges to whole device pixels, like WinUI layout rounding, so
+    /// fills stay crisp at 125%/150% scaling.
+    fn snap(&self, r: D2D_RECT_F) -> D2D_RECT_F {
+        let k = self.scale();
+        let s = |v: f32| (v * k).round() / k;
+        rect(s(r.left), s(r.top), s(r.right), s(r.bottom))
+    }
+
+    /// Fills a rounded rectangle (edges snapped to device pixels).
     pub fn fill_round(&self, rect: D2D_RECT_F, radius: f32, color: D2D1_COLOR_F) {
         unsafe {
             self.brush.SetColor(&color);
-            self.ctx.FillRoundedRectangle(&rounded(rect, radius), &self.brush);
+            self.ctx.FillRoundedRectangle(&rounded(self.snap(rect), radius), &self.brush);
         }
     }
 
-    /// Draws a 1-DIP border inside `rect`.
+    /// Draws a 1-DIP border inside `rect` (edges snapped to device pixels).
     pub fn stroke_round(&self, rect: D2D_RECT_F, radius: f32, color: D2D1_COLOR_F) {
+        let rect = self.snap(rect);
         let inner = D2D_RECT_F {
             left: rect.left + 0.5,
             top: rect.top + 0.5,
