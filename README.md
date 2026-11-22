@@ -40,6 +40,7 @@ surface.end()?;
 | `flyout` | Posicionamento, animação de abrir/fechar e aparência do Flyout |
 | `menu_flyout` | `MenuFlyoutPresenter` com itens, separadores, atalhos e navegação por teclado |
 | `tooltip` | `ToolTip` com atraso e duração do sistema, posicionamento sobre o ponteiro e fade |
+| `list_view` | Núcleo virtualizado de `ListView`: só as linhas visíveis (mais overscan) são medidas e posicionadas |
 | `panel` | Roteamento comum: foco, captura, Tab, eventos (`trait Control`) |
 | `uia` | UI Automation: providers com Invoke, Toggle e RangeValue, e eventos de propriedade |
 
@@ -299,6 +300,18 @@ Limites: sem submenu, ícone, checkbox/radio, mnemonic, `MenuFlyout` de contexto
 `tooltip::Timing::system()` lê os dois parâmetros com `SystemParametersInfoW`, como o XAML, uma vez na inicialização. Nesta máquina (Windows 26H2) o valor real de `SPI_GETMOUSEHOVERTIME` é **10 ms** — não o fallback de 400 ms da documentação —, então a dica abre em 20 ms; `SPI_GETMESSAGEDURATION` é 5 s. O exemplo usa `SetTimer` de um tiro só por transição e só rearma quando o atraso muda (um `WM_MOUSEMOVE` não vira syscall), então o loop continua bloqueado em `GetMessageW` quando não há dica nem animação. O casco convexo do SafeZone é montado em arrays na stack, sem alocação por movimento.
 
 Exemplo: "Configurações", "Salvar", "Wi-Fi", "Mais opções" e "Menu" têm dicas. Verificado visualmente no Windows real: a dica aparece acima do botão "Salvar", com fundo acrílico, cantos arredondados, texto Caption 12 e padding corretos. Limite: a dica é posicionada na abertura e não segue o cursor depois disso (o XAML também reposiciona só em mudanças de layout), sem `PlacementRect`/offsets configuráveis, sem conteúdo rico, sem tooltip de atalho de teclado e sem provider UIA próprio. Não há WinUI 3 Gallery instalada para comparação lado a lado; a referência visual é o XAML oficial.
+
+## ListView (virtualização)
+
+`list_view::ListView` guarda os itens como texto e mantém só `offset`, `viewport` e seleção. `visible()` devolve o intervalo de índices que pode cruzar a janela, com uma linha de overscan; `arrange()` devolve retângulos apenas para essas linhas, e `hit()` converte o ponto usando o scroll sem percorrer a lista. Nenhum controle por item é criado e nada é medido por frame: o custo é proporcional à janela, não ao total de itens — o que interessa para a lista de apps do Iniciar.
+
+| Regra | Fonte |
+|---|---|
+| Altura mínima da linha 40, largura mínima 88, padding 16,0,12,0, raio 4 | [`ListViewItem_themeresources.xaml`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/controls/dev/CommonStyles/ListViewItem_themeresources.xaml) (`ListViewItemMinHeight`, `ListViewItemMinWidth`, `Padding`, `ListViewItemCornerRadius`) |
+| Resto transparente; PointerOver e Selected usam `SubtleFillColorSecondary`, Pressed e Selected+PointerOver `SubtleFillColorTertiary`; texto sempre `TextFillColorPrimary` | idem (será aplicado no corte de desenho) |
+| Seleção simples: setas/Home/End movem e `ensure_visible` rola o mínimo necessário; o scroll é limitado a `[0, total − viewport]` | Decisão deste crate sobre `ListView.SelectionMode=Single` e `ScrollViewer`, ainda sem `ScrollViewer` próprio |
+
+Este corte é só o núcleo (dados, geometria, hit test, seleção e testes em `src/list_view.rs`). Falta o presenter desenhado, rodinha/teclado de rolagem, `GridView` e UIA.
 
 ## Panel (roteamento comum)
 
