@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use fluent_win::backdrop;
 use fluent_win::button::{Button, FocusKind, Input, Key, Response, Visual};
+use fluent_win::check_box::{self, CheckBox};
 use fluent_win::toggle_switch::ToggleSwitch;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use fluent_win::gfx::{Surface, rect};
@@ -24,7 +25,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     IRawElementProviderSimple, ToggleState_Off, ToggleState_On, UIA_AutomationFocusChangedEventId, UIA_EVENT_ID,
-    UIA_ButtonControlTypeId, UIA_Invoke_InvokedEventId, UIA_ToggleToggleStatePropertyId, UiaRaiseAutomationPropertyChangedEvent,
+    UIA_ButtonControlTypeId, UIA_CONTROLTYPE_ID, UIA_CheckBoxControlTypeId, UIA_Invoke_InvokedEventId, UIA_ToggleToggleStatePropertyId, UiaRaiseAutomationPropertyChangedEvent,
     UiaClientsAreListening, UiaRaiseAutomationEvent, UiaReturnRawElementProvider, UiaRootObjectId,
 };
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -33,7 +34,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-    VIRTUAL_KEY, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
+    VIRTUAL_KEY, VK_ADD, VK_RETURN, VK_SHIFT, VK_SPACE, VK_SUBTRACT, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
@@ -54,10 +55,7 @@ struct App {
     hwnd: HWND,
     surface: Surface,
     theme: Theme,
-    label: IDWriteTextFormat,
-    body: IDWriteTextFormat,
-    /// Left-aligned format for ToggleSwitch header and content.
-    switch_text: IDWriteTextFormat,
+    formats: Formats,
     buttons: Vec<Control>,
     focused: Option<usize>,
     status: String,
@@ -71,6 +69,19 @@ struct App {
 enum Control {
     Button(Button),
     Switch(Box<ToggleSwitch>),
+    Check(CheckBox),
+}
+
+/// Text formats the controls draw with.
+struct Formats {
+    /// Centered Body (Button).
+    label: IDWriteTextFormat,
+    /// Left, vertically centered Body (ToggleSwitch).
+    switch: IDWriteTextFormat,
+    /// Left, top Body (CheckBox content, status line).
+    body: IDWriteTextFormat,
+    /// Segoe Fluent Icons at the CheckBox glyph size.
+    icon: IDWriteTextFormat,
 }
 
 impl Control {
@@ -78,6 +89,7 @@ impl Control {
         match self {
             Control::Button(b) => b.handle(input),
             Control::Switch(s) => s.handle(input),
+            Control::Check(c) => c.handle(input),
         }
     }
 
@@ -85,13 +97,15 @@ impl Control {
         match self {
             Control::Button(b) => b.invoke(),
             Control::Switch(s) => s.invoke(),
+            Control::Check(c) => c.invoke(),
         }
     }
 
-    fn draw(&self, s: &Surface, t: &Theme, label: &IDWriteTextFormat, switch: &IDWriteTextFormat) -> Result<()> {
+    fn draw(&self, s: &Surface, t: &Theme, f: &Formats) -> Result<()> {
         match self {
-            Control::Button(b) => b.draw(s, t, label),
-            Control::Switch(w) => w.draw(s, t, switch),
+            Control::Button(b) => b.draw(s, t, &f.label),
+            Control::Switch(w) => w.draw(s, t, &f.switch),
+            Control::Check(c) => c.draw(s, t, &f.body, &f.icon),
         }
     }
 
@@ -99,6 +113,7 @@ impl Control {
         match self {
             Control::Button(b) => b.animating(),
             Control::Switch(s) => s.animating(),
+            Control::Check(c) => c.animating(),
         }
     }
 
@@ -106,6 +121,7 @@ impl Control {
         match self {
             Control::Button(b) => b.is_captured(),
             Control::Switch(s) => s.is_captured(),
+            Control::Check(c) => c.is_captured(),
         }
     }
 
@@ -113,6 +129,7 @@ impl Control {
         let visual = match self {
             Control::Button(b) => b.visual(),
             Control::Switch(s) => s.visual(),
+            Control::Check(c) => c.visual(),
         };
         visual != Visual::Disabled
     }
@@ -122,6 +139,7 @@ impl Control {
         match self {
             Control::Button(b) => &b.label,
             Control::Switch(s) => &s.header,
+            Control::Check(c) => c.label(),
         }
     }
 
@@ -129,6 +147,7 @@ impl Control {
         match self {
             Control::Button(b) => b.rect,
             Control::Switch(s) => s.rect,
+            Control::Check(c) => c.rect(),
         }
     }
 
@@ -137,6 +156,15 @@ impl Control {
         match self {
             Control::Button(b) => b.is_checked(),
             Control::Switch(s) => Some(s.is_on()),
+            Control::Check(c) => Some(c.is_checked()),
+        }
+    }
+
+    /// UIA ControlType (`CheckBoxAutomationPeer` reports CheckBox; the others, Button).
+    fn control_type(&self) -> UIA_CONTROLTYPE_ID {
+        match self {
+            Control::Check(_) => UIA_CheckBoxControlTypeId,
+            _ => UIA_ButtonControlTypeId,
         }
     }
 }
@@ -167,9 +195,9 @@ impl App {
             s.fill_round(rect(0.0, 0.0, w, h), 0.0, c.window);
         }
         for b in &self.buttons {
-            b.draw(s, t, &self.label, &self.switch_text)?;
+            b.draw(s, t, &self.formats)?;
         }
-        s.text(&self.status, &self.body, rect(PAD, 200.0, PAD + 500.0, 224.0), t.text_secondary);
+        s.text(&self.status, &self.formats.body, rect(PAD, 200.0, PAD + 500.0, 224.0), t.text_secondary);
         s.end()
     }
 
@@ -184,7 +212,7 @@ impl App {
             rect: b.rect(),
             enabled: b.enabled(),
             toggle: b.checked(),
-            control_type: UIA_ButtonControlTypeId,
+            control_type: b.control_type(),
         }).collect();
     }
 
@@ -307,6 +335,8 @@ impl App {
         let key = match vk {
             VK_SPACE => Key::Space,
             VK_RETURN => Key::Enter,
+            VK_ADD => Key::Add,
+            VK_SUBTRACT => Key::Subtract,
             _ => Key::Other,
         };
         let r = self.buttons[i].handle(if down { Input::KeyDown(key) } else { Input::KeyUp(key) });
@@ -556,10 +586,18 @@ fn main() -> Result<()> {
         let switch_text = ToggleSwitch::text_format(&surface)?;
         let (header, on, off) = ("Modo avião", "Ativado", "Desativado");
         let top = top + h + GAP;
-        buttons.push(Control::Switch(Box::new(ToggleSwitch::layout(&surface, &switch_text, header, on, off, PAD, top, false)?)));
+        let switch = ToggleSwitch::layout(&surface, &switch_text, header, on, off, PAD, top, false)?;
+        // A CheckBox beside it, centered on the switch row.
+        let icon = surface.icon_format(check_box::GLYPH_SIZE)?;
+        let text = "Lembrar de mim";
+        let (cw, ch) = CheckBox::desired_size(&surface, &body, text)?;
+        let (x, cy) = (switch.rect.right + GAP * 3.0, switch.rect.bottom - 20.0);
+        buttons.push(Control::Switch(Box::new(switch)));
+        buttons.push(Control::Check(CheckBox::new(text, rect(x, cy - ch / 2.0, x + cw, cy + ch / 2.0), true)));
 
         let mut app = App {
-            hwnd, surface, theme, label, body, switch_text, buttons,
+            hwnd, surface, theme, buttons,
+            formats: Formats { label, switch: switch_text, body, icon },
             focused: None,
             status: "Tab para focar, Espaço/Enter para clicar".to_owned(),
             tracking: false,

@@ -157,6 +157,11 @@ Não citado literalmente: o corpo de `OnPointerPressed`/`OnPointerReleased`. As 
 
 Sem estado indeterminado (`IsThreeState`) por enquanto.
 
+Exemplo: "Lembrar de mim" (começa marcado) ao lado do switch; o `enum Control` ganhou `Check` e um `Formats` com os quatro formatos de texto. Verificado:
+- Cliente UIA real: tipo "caixa de seleção", só `TogglePattern`, `Toggle()` dá On → Off → On → Off com os eventos `1->0`, `0->1`, `1->0`.
+- Teclado (mensagens postadas com o foco no CheckBox via UIA): `-` desmarca, `-` de novo não muda, `+` marca, Enter não faz nada, Espaço alterna.
+- Tela: quadrado no acento com o check escuro (glifo da Segoe Fluent Icons) quando marcado; quadrado vazio com borda quando desmarcado. 51.5 MB com UIA ativo, código de saída 0.
+
 ## ToggleSwitch
 
 `toggle_switch::ToggleSwitch::new(header, on_content, off_content, rect, on)` reproduz o `ToggleSwitch` do WinUI (`DefaultToggleSwitchStyle`). Usa o mesmo `Input`/`Response`/`Visual` do Button; `Response::clicked` = `IsOn` mudou (`Toggled`). `desired_size` mede header + conteúdo.
