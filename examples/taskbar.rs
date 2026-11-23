@@ -40,7 +40,9 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Accessibility::{
     UIA_MenuItemControlTypeId, UiaReturnRawElementProvider, UiaRootObjectId,
 };
-use windows::Win32::UI::Shell::ABN_POSCHANGED;
+use windows::Win32::UI::Shell::{
+    ABM_GETTASKBARPOS, ABN_POSCHANGED, APPBARDATA, SHAppBarMessage, ShellExecuteW,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_RETURN, VK_SPACE, VK_UP,
     VIRTUAL_KEY,
@@ -50,7 +52,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, GetWindowThreadProcessId, HSHELL_HIGHBIT, HSHELL_MONITORCHANGED, HSHELL_REDRAW,
     HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW, IsIconic,
     IsWindow, KillTimer, LoadCursorW, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
-    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, SW_MINIMIZE, SW_RESTORE, SWP_NOACTIVATE,
+    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOWNORMAL,
+    SWP_NOACTIVATE,
     SW_SHOW, SWP_NOZORDER, TranslateMessage, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_DESTROY,
     WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
     WM_RBUTTONDOWN, WM_TIMER,
@@ -60,8 +63,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, Result, w};
 
 const APPBAR_CALLBACK: u32 = WM_APP + 0x60;
-/// Width of one task button in DIPs, measured from the real taskbar.
-const BUTTON_WIDTH: f32 = 48.0;
 const CLOCK_TIMER: usize = 1;
 /// `HSHELL_FLASH` is `HSHELL_REDRAW` with the high bit set (winuser.h).
 const HSHELL_FLASH: u32 = HSHELL_REDRAW | HSHELL_HIGHBIT;
@@ -234,6 +235,21 @@ extern "system" fn each_monitor(monitor: HMONITOR, _hdc: HDC, _rect: *mut RECT, 
     BOOL(1)
 }
 
+/// The system taskbar strip, from the documented `ABM_GETTASKBARPOS`. Unlike
+/// `rcWork`, it does not move when our own appbar reserves space.
+fn system_taskbar(monitor: HMONITOR) -> Option<RECT> {
+    let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    let mut data = APPBARDATA { cbSize: size_of::<APPBARDATA>() as u32, ..Default::default() };
+    unsafe {
+        _ = GetMonitorInfoW(monitor, &mut info);
+        if SHAppBarMessage(ABM_GETTASKBARPOS, &mut data) == 0 {
+            return None;
+        }
+        let bar = data.rc;
+        (bar.bottom == info.rcMonitor.bottom && bar.top > info.rcMonitor.top).then_some(bar)
+    }
+}
+
 fn loword(v: isize) -> i16 {
     (v & 0xffff) as i16
 }
@@ -315,17 +331,47 @@ fn window_icon(surface: &Surface, cache: &mut icons::IconCache, hwnd: HWND) -> O
 
 /// Window under a task-button x coordinate (DIPs from the bar's left edge).
 fn button_at(app: &App, x: f32) -> Option<HWND> {
-    let width = BUTTON_WIDTH;
-    // Same right limit as the drawing clip, so the clock area is not clickable.
-    let (w, _) = app.surface.size();
-    if x < 8.0 || x > w - 260.0 {
+    let (w, h) = app.surface.size();
+    let pad = h / 6.0;
+    let first = pad + h;
+    let last = clock_left(app, w, h) - h / 6.0;
+    if x < first || x > last {
         return None;
     }
-    let index = ((x - 8.0) / width) as isize;
-    if index < 0 || x - 8.0 - index as f32 * width > width {
+    let index = ((x - first) / h) as isize;
+    if index < 0 || x - first - index as f32 * h > h {
         return None;
     }
     app.windows.get(index as usize).map(|info| info.hwnd)
+}
+
+/// True when x is over the Start slot.
+fn start_at(app: &App, x: f32) -> bool {
+    let (_, h) = app.surface.size();
+    let pad = h / 6.0;
+    x >= pad && x < pad + h
+}
+
+/// Opens the Start example from the same directory as this executable. The
+/// path is derived at run time, so the shell works from any install folder.
+fn open_start() {
+    let Some(path) = std::env::current_exe().ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("start.exe")))
+    else { return };
+    unsafe {
+        _ = ShellExecuteW(None, w!("open"),
+            &windows::core::HSTRING::from(path.to_string_lossy().as_ref()),
+            None, None, SW_SHOWNORMAL);
+    }
+}
+
+/// Start of the clock area, measured from the real strings so locale and DPI
+/// changes never need a reserved pixel count.
+fn clock_left(app: &App, w: f32, h: f32) -> f32 {
+    let (time, date) = locale_text();
+    let (tw, _) = app.surface.measure(&time, &app.formats.caption).unwrap_or((0.0, 0.0));
+    let (dw, _) = app.surface.measure(&date, &app.formats.caption).unwrap_or((0.0, 0.0));
+    w - tw.max(dw) - h / 3.0 - h / 6.0
 }
 
 impl App {
@@ -397,29 +443,30 @@ impl App {
     /// Re-query the work area and place the bar; also called on ABN_POSCHANGED.
     fn reposition(&mut self) -> Result<()> {
         let k = self.surface.scale();
-        let (work, strip) = unsafe {
-            let monitor = MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST);
-            let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-            _ = GetMonitorInfoW(monitor, &mut info);
-            (info.rcWork, info.rcMonitor.bottom - info.rcWork.bottom)
-        };
-        let height = if strip > 0 {
-            (strip as f32 / k).round() as i32
-        } else {
-            (app_bar::HEIGHT * k).round() as i32
-        };
-        // SHAppBarMessage(ABM_SETPOS) shrinks the work area, which sends us
-        // ABN_POSCHANGED. Once our top edge sits at the new work bottom we are
-        // already placed: committing again would walk the bar up the screen.
         let current = unsafe {
             let mut r = RECT::default();
             _ = GetWindowRect(self.hwnd, &mut r);
             r
         };
-        if current.top == work.bottom && current.right == work.right {
+        let monitor = unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) };
+        let (work, anchor, height) = unsafe {
+            let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            _ = GetMonitorInfoW(monitor, &mut info);
+            match system_taskbar(monitor) {
+                Some(bar) => (info.rcWork, bar.top, bar.bottom - bar.top),
+                // A monitor without a system taskbar: fall back to its work
+                // area and the documented Win11 height.
+                None => (info.rcWork, info.rcWork.bottom, (app_bar::HEIGHT * k).round() as i32),
+            }
+        };
+        let desired = app_bar::bottom_rect(RECT { bottom: anchor, ..work }, height);
+        // Our own ABM_SETPOS sends ABN_POSCHANGED. Once we are at the anchored
+        // rect, do not reserve again or the work area keeps shrinking.
+        if current.top == desired.top && current.bottom == desired.bottom
+            && current.left == desired.left && current.right == desired.right
+        {
             return self.render();
         }
-        let desired = app_bar::bottom_rect(work, height);
         let final_rect = self.bar.set_bottom(desired);
         unsafe {
             SetWindowPos(self.hwnd, None, final_rect.left, final_rect.top,
@@ -464,8 +511,12 @@ impl App {
         self.render()
     }
 
-    /// Activates a task button, or minimizes the window when it is already active.
+    /// Activates the Start slot, or a task button; minimizes the active window.
     fn activate_button(&mut self, x: f32) -> Result<()> {
+        if start_at(self, x) {
+            open_start();
+            return Ok(());
+        }
         let Some(hwnd) = button_at(self, x) else { return Ok(()) };
         unsafe {
             if self.active == Some(hwnd) && !IsIconic(hwnd).as_bool() {
@@ -481,6 +532,8 @@ impl App {
     fn render(&mut self) -> Result<()> {
         let (w, h) = self.surface.size();
         let style = flyout::style(&self.theme, self.backdrop);
+        let clock_left = clock_left(self, w, h);
+        let (time, date) = locale_text();
         let buttons: Vec<(String, bool, Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>)> =
             self.windows.iter().enumerate()
                 .map(|(i, info)| (info.title.clone(), self.active == Some(info.hwnd), self.icons.get(i).cloned().flatten()))
@@ -494,27 +547,48 @@ impl App {
         if let Some(c) = t.high_contrast {
             s.fill_round(rect(0.0, 0.0, w, h), 0.0, c.window);
         }
-        // Measured on the real Windows 11 bar: 48-DIP slots with a 24-DIP
-        // centred icon, no title, and a short indicator under the active one.
-        let button_width = BUTTON_WIDTH;
-        let task_area = rect(8.0, 0.0, w - 260.0, h);
+        // Slots are square and follow the bar height the system gave us; every
+        // inset is a fraction of it, so DPI and taskbar settings change the
+        // whole layout without a pixel count in the code.
+        let pad = h / 6.0;
+        let inset = h / 12.0;
+        let radius = h / 12.0;
+        let icon = h / 2.0;
+        let indicator = h / 24.0;
+        // Start: the four panes of the Windows mark, sized from the slot.
+        let glyph = h / 2.0;
+        let gap = h / 16.0;
+        let pane = (glyph - gap) / 2.0;
+        let gx = pad + (h - glyph) / 2.0;
+        let gy = (h - glyph) / 2.0;
+        for dx in [0.0, pane + gap] {
+            for dy in [0.0, pane + gap] {
+                s.fill_round(rect(gx + dx, gy + dy, gx + dx + pane, gy + dy + pane),
+                    pane / 5.0, t.accent);
+            }
+        }
+        let task_area = rect(pad + h, 0.0, clock_left - pad, h);
         s.with_clip(task_area, |s| {
-            for (i, (_title, active, icon)) in buttons.iter().enumerate() {
-                let x = 8.0 + i as f32 * button_width;
+            for (i, (_title, active, icon_bitmap)) in buttons.iter().enumerate() {
+                let x = pad + h + i as f32 * h;
                 if *active {
-                    s.fill_round(rect(x + 4.0, 0.0, x + button_width - 4.0, h), 4.0, t.subtle_hover);
-                    s.fill_round(rect(x + 16.0, h - 3.0, x + button_width - 16.0, h), 1.0, t.accent);
+                    s.fill_round(rect(x + inset, 0.0, x + h - inset, h), radius, t.subtle_hover);
+                    s.fill_round(rect(x + h / 3.0, h - indicator, x + h - h / 3.0, h),
+                        indicator / 2.0, t.accent);
                 }
-                if let Some(bitmap) = icon {
-                    icons::draw(s, bitmap, x + 12.0, (h - 24.0) / 2.0, 24.0);
+                if let Some(bitmap) = icon_bitmap {
+                    icons::draw(s, bitmap, x + (h - icon) / 2.0, (h - icon) / 2.0, icon);
                 }
             }
         });
-        let (time, date) = locale_text();
-        let text = format!("{date}  {time}");
-        let label_w = 220.0;
-        s.text_no_wrap(&text, &f.switch,
-            rect(w - label_w - 16.0, 0.0, w - 16.0, h), t.text_primary);
+        // Windows 11 stacks time over date, right aligned.
+        let clock_rect = rect(clock_left, 0.0, w - pad, h);
+        s.text_no_wrap(&time, &f.caption,
+            rect(clock_rect.left, clock_rect.top, clock_rect.right, clock_rect.bottom / 2.0),
+            t.text_primary);
+        s.text_no_wrap(&date, &f.caption,
+            rect(clock_rect.left, clock_rect.bottom / 2.0, clock_rect.right, clock_rect.bottom),
+            t.text_secondary);
         s.end()
     }
 }
@@ -604,9 +678,10 @@ fn main() -> Result<()> {
             _ = GetDpiForMonitor(*monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
             let k = dx as f32 / 96.0;
             let width = info.rcMonitor.right - info.rcMonitor.left;
-            // Height from the work area, not a fixed 48: follows DPI and the
-            // user's taskbar settings.
-            let bar_h = ((info.rcMonitor.bottom - info.rcWork.bottom) as f32 / k).round() as i32;
+            // Height from the system taskbar, not a fixed 48: follows DPI and
+            // the user's taskbar settings.
+            let bar_h = system_taskbar(*monitor).map(|bar| bar.bottom - bar.top)
+                .unwrap_or_else(|| ((info.rcMonitor.bottom - info.rcWork.bottom) as f32 / k).round() as i32);
             let bar_h = if bar_h > 0 { bar_h } else { metrics::taskbar_height_dip().round() as i32 };
             let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Taskbar"),
                 WS_POPUP | WS_VISIBLE, info.rcWork.left, info.rcWork.bottom - bar_h,
