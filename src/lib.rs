@@ -23,6 +23,7 @@ pub mod layout;
 pub mod list_view;
 pub mod menu_flyout;
 pub mod panel;
+pub mod quick_settings;
 pub mod progress;
 pub mod radio_button;
 pub mod scroll_viewer;
