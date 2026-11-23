@@ -6,12 +6,15 @@ description = "Windows 11 (Fluent) visuals for raw Win32 in Rust: Mica, rounded 
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+windows-collections = "0.3.2"
 windows-core = "0.62.2"
+windows-future = "0.3.2"
 windows-numerics = "0.3.1"
 
 [dependencies.windows]
 version = "0.62.2"
 features = [
+    "Devices_Radios",
     "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_Globalization",

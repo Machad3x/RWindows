@@ -8,8 +8,10 @@ use fluent_win::button::{Input, Key};
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::panel::Formats;
 use fluent_win::quick_settings::{self, Volume};
+use fluent_win::radios::{self, Radios, RadioInfo};
 use fluent_win::slider::Slider;
 use fluent_win::theme::Theme;
+use windows::Devices::Radios::RadioKind;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::ValidateRect;
@@ -45,6 +47,8 @@ struct App {
     formats: Formats,
     volume: Option<Volume>,
     brightness: Option<u8>,
+    radios: Option<Radios>,
+    radio_infos: Vec<RadioInfo>,
     volume_slider: Slider,
     brightness_slider: Slider,
     tiles: [Tile; 3],
@@ -95,6 +99,55 @@ impl App {
         ((lp.0 & 0xffff) as f32 / k, ((lp.0 >> 16) & 0xffff) as f32 / k)
     }
 
+    fn toggle_tile(&mut self, index: usize) {
+        let Some(radios) = &self.radios else { return };
+        match index {
+            0 | 1 => {
+                let kind = if index == 0 { RadioKind::WiFi } else { RadioKind::Bluetooth };
+                let position = self.radio_infos.iter().position(|info| info.kind == kind);
+                if let Some(position) = position {
+                    let on = self.radio_infos[position].state == windows::Devices::Radios::RadioState::On;
+                    let target = if on {
+                        windows::Devices::Radios::RadioState::Off
+                    } else {
+                        windows::Devices::Radios::RadioState::On
+                    };
+                    if radios.set(position, target).unwrap_or(false) {
+                        self.radio_infos[position].state = target;
+                    }
+                }
+            }
+            2 => {
+                let airplane = !radios::is_airplane(&self.radio_infos);
+                if radios.set_airplane(airplane).is_ok()
+                    && let Ok(infos) = radios.info()
+                {
+                    self.radio_infos = infos;
+                }
+            }
+            _ => {}
+        }
+        self.sync_tiles();
+    }
+
+    /// Mirrors radio state into the three tiles.
+    fn sync_tiles(&mut self) {
+        for (index, tile) in self.tiles.iter_mut().enumerate() {
+            tile.on = match index {
+                0 => self.radio_infos.iter().any(|info| {
+                    info.kind == RadioKind::WiFi
+                        && info.state == windows::Devices::Radios::RadioState::On
+                }),
+                1 => self.radio_infos.iter().any(|info| {
+                    info.kind == RadioKind::Bluetooth
+                        && info.state == windows::Devices::Radios::RadioState::On
+                }),
+                2 => radios::is_airplane(&self.radio_infos),
+                _ => false,
+            };
+        }
+    }
+
     /// Pushes changed slider values to the system. A click without a drag must
     /// apply too, so every input path calls this.
     fn apply_values(&mut self, before_v: f64, before_b: f64) {
@@ -113,12 +166,10 @@ impl App {
     }
 
     fn down(&mut self, x: f32, y: f32) -> bool {
-        for tile in self.tiles.iter_mut() {
+        for (index, tile) in self.tiles.iter_mut().enumerate() {
             let r = tile.rect;
             if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
-                // shortcut: radio tiles are local UI state only; wiring Wi-Fi,
-                // Bluetooth and airplane mode needs WinRT Radios (planned).
-                tile.on = !tile.on;
+                self.toggle_tile(index);
                 return true;
             }
         }
@@ -249,7 +300,11 @@ fn main() -> Result<()> {
         let volume = Volume::new().ok();
         let level = volume.as_ref().and_then(|v| v.level().ok()).unwrap_or(0.5);
         let brightness = quick_settings::brightness();
-        eprintln!("volume={} brightness={:?}", quick_settings::percent(level), brightness);
+        let radios = Radios::load().ok();
+        let radio_infos = radios.as_ref().and_then(|r| r.info().ok()).unwrap_or_default();
+        eprintln!("volume={} brightness={:?} radios={:?}",
+            quick_settings::percent(level), brightness,
+            radio_infos.iter().map(|i| (&i.name, i.state)).collect::<Vec<_>>());
 
         let volume_slider = Slider::new("Volume", rect(PAD + 6.0, 238.0, W - PAD - 6.0, 270.0),
             0.0, 100.0, quick_settings::percent(level) as f64);
@@ -269,12 +324,12 @@ fn main() -> Result<()> {
             tile.rect.left = PAD + i as f32 * (tile_w + 8.0);
             tile.rect.right = tile.rect.left + tile_w;
         }
-        APP.with(|cell| {
-            *cell.borrow_mut() = Some(App {
-                surface, theme, formats, volume, brightness,
-                volume_slider, brightness_slider, tiles, captured: 0, focus: 0,
-            });
-        });
+        let mut app = App {
+            surface, theme, formats, volume, brightness, radios, radio_infos,
+            volume_slider, brightness_slider, tiles, captured: 0, focus: 0,
+        };
+        app.sync_tiles();
+        APP.with(|cell| *cell.borrow_mut() = Some(app));
         with_app(App::render);
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {

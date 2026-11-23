@@ -7,7 +7,9 @@ name = "fluent-win"
 version = "0.1.0"
 dependencies = [
  "windows",
+ "windows-collections",
  "windows-core",
+ "windows-future",
  "windows-numerics",
 ]
 
