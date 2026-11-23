@@ -459,7 +459,7 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 
 ### Central de notificações
 
-`calendar.rs` calcula dia da semana, dias do mês (incluindo bissextos) e uma grade fixa de 6 semanas sem dependências. `examples/notifications.rs` desenha o mês atual com o dia real destacado e um lugar para notificações; verificado no Windows 26H2 (22 de novembro de 2026 em destaque, igual ao relógio local). A primeira captura revelou que `UNIX_EPOCH` dava o dia UTC — trocado por `GetLocalTime` (`shortcut:` corrigido, não deixado). Limite: a lista de notificações é um espaço reservado. `UserNotificationListener` exige identidade de pacote, que um executável avulso não tem; uma futura versão empacotada pode preenchê-lo. Sem navegação entre meses, UIA própria nem toasts.
+`calendar.rs` calcula dia da semana, dias do mês (incluindo bissextos) e a grade de 6 semanas sem dependências. O primeiro dia da semana vem de `LOCALE_IFIRSTDAYOFWEEK` e o mês/ano longo de `GetDateFormatEx` (`LOCALE_SYEARMONTH`), então o calendário segue o idioma do usuário em vez de gramática fixa. `examples/notifications.rs` foi medido contra o painel real (340×835 px, calendário ancorado embaixo, altura dinâmica): desenha o mês atual com o dia real destacado e um lugar para notificações; verificado no Windows 26H2 (22 de novembro de 2026 em destaque, igual ao relógio local). A primeira captura revelou que `UNIX_EPOCH` dava o dia UTC — trocado por `GetLocalTime` (`shortcut:` corrigido, não deixado). Limite: a lista de notificações é um espaço reservado. `UserNotificationListener` exige identidade de pacote, que um executável avulso não tem; uma futura versão empacotada pode preenchê-lo. Sem navegação entre meses, UIA própria nem toasts.
 
 ## Métricas dinâmicas
 
@@ -468,6 +468,10 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 ## Desempenho
 
 O flyout de Configurações Rápidas só repinta o Direct2D quando um slider muda de valor: `WM_MOUSEMOVE` sem captura ativa não gera desenho. `radios::block` trocou o polling de 2 ms por `IntoFuture` com um waker que desperta a thread; um `park_timeout` de 50 ms cobre a corrida entre `poll` e `park`, então não há spin nem risco de dormir para sempre. Verificado no Windows 26H2: rádios continuam sendo lidos (Wi-Fi e Bluetooth ligados).
+
+## Auditoria
+
+`ponytail-audit` varreu o código em busca de valores fixos e caminhos frágeis. As correções estão nos commits da Fase 4: geração monotônica do device, flags `NIF` preservadas no `NIM_MODIFY` da bandeja, DPI por monitor declarado nas janelas de flyout, backup do shell preservado no registro e `REG_EXPAND_SZ` expandido, relógio da barra fora da área clicável dos botões, `SendMessageTimeoutW` ao ler títulos de janela, `SM_CXDRAG` no limiar de arraste do ToggleSwitch, foco de teclado e alto contraste no RadioButton, menu de contexto da barra ativável (Esc/setas e light dismiss), exemplo de progresso redimensionável e varredura recursiva do Menu Iniciar. Os valores que continuam fixos são contagens de demonstração e durações de animação, documentados.
 
 ## Fase 4 — Registro do shell
 
