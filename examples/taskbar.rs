@@ -478,7 +478,8 @@ fn clock_left(app: &App, w: f32, h: f32) -> f32 {
 
 /// Start of the tray area: a chevron slot plus one slot per received icon.
 fn tray_left(app: &App, w: f32, h: f32) -> f32 {
-    clock_left(app, w, h) - (app.tray_bitmaps.len() + 1) as f32 * (h / 2.0)
+    // Chevron + app icons + three system status glyphs.
+    clock_left(app, w, h) - (app.tray_bitmaps.len() + 4) as f32 * (h / 2.0)
 }
 
 impl App {
@@ -747,6 +748,13 @@ impl App {
                 icons::draw(s, bitmap, x + (tray_slot - tray_icon) / 2.0,
                     (h - tray_icon) / 2.0, tray_icon);
             }
+        }
+        // System status glyphs Windows draws itself when Explorer is the shell.
+        let system_x = tray_left + tray_slot + self.tray_bitmaps.len() as f32 * tray_slot;
+        for (i, glyph) in ["\u{E701}", "\u{E767}", "\u{E775}"].iter().enumerate() {
+            let x = system_x + i as f32 * tray_slot;
+            s.text_no_wrap(glyph, &f.icon,
+                rect(x, 0.0, x + tray_slot, h), t.text_secondary);
         }
         // Windows 11 stacks time over date, right aligned.
         let clock_rect = rect(clock_left, 0.0, w - pad, h);
