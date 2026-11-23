@@ -36,7 +36,8 @@ pub fn name_from_path(path: &Path) -> String {
     path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_owned()
 }
 
-fn known_folder(id: *const windows::core::GUID) -> Result<PathBuf> {
+/// Path of a known folder, such as `FOLDERID_Startup`.
+pub fn known_folder(id: &windows::core::GUID) -> Result<PathBuf> {
     unsafe {
         let path = SHGetKnownFolderPath(id, Default::default(), None)?;
         let text = path.to_string()?;
@@ -48,7 +49,7 @@ fn known_folder(id: *const windows::core::GUID) -> Result<PathBuf> {
 /// Start Menu folders, user first (user entries override common ones).
 pub fn folders() -> Result<Vec<PathBuf>> {
     let mut folders = Vec::new();
-    for id in [&FOLDERID_StartMenu as *const _, &FOLDERID_CommonStartMenu as *const _] {
+    for id in [&FOLDERID_StartMenu, &FOLDERID_CommonStartMenu] {
         let root = known_folder(id)?;
         for sub in ["", "Programs"] {
             let folder = if sub.is_empty() { root.clone() } else { root.join(sub) };

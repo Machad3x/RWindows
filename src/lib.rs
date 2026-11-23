@@ -34,6 +34,7 @@ pub mod session;
 pub mod shell_registration;
 pub mod slider;
 pub mod text_box;
+pub mod startup;
 pub mod theme;
 pub mod tray;
 pub mod toggle_switch;

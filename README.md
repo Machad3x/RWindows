@@ -473,6 +473,10 @@ O flyout de Configurações Rápidas só repinta o Direct2D quando um slider mud
 
 `tray.rs` registra uma janela oculta da classe `Shell_TrayWnd`, que é o contrato do Windows: `Shell_NotifyIcon` entrega `WM_COPYDATA` com `dwData = 1` e um `NOTIFYICONDATA` neutro em plataforma (handles de 32 bits mesmo em x64). Por isso os offsets são constantes nomeadas e testadas, não um cast para a struct x64 do windows-rs — cast daria campos deslocados. O módulo interpreta NIM_ADD/MODIFY/DELETE/SETVERSION, guarda o HICON com `CopyIcon` e reproduz os eventos de clique que o Explorer envia. **Não é uma cópia da implementação do WinRust**: ele usa GDI/GDI+ e offsets literais; aqui o desenho continua sendo D2D/DirectComposition do RWindows e o parsing é isolado, nomeado e coberto por testes. Não foi executado com o Explorer vivo (as duas janelas competiriam); o teste real exige VM sem Explorer como shell. Faltam duplo clique, balões, menus e desenho dos ícones na barra.
 
+### Inicialização de apps
+
+`startup::enumerate()` lê os valores de `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` via `RegQueryInfoKeyW`/`RegEnumValueW` e os `.lnk` da pasta `FOLDERID_Startup`, devolvendo nome, linha de comando e origem. É somente leitura e foi verificado nesta máquina (teste que não altera a registry). Falta executar as entradas no arranque do shell e tratar as chaves `RunOnce`.
+
 ## Verificações não feitas
 
 Quatro caminhos ficaram sem verificação prática nesta máquina, por limites concretos:

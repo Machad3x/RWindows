@@ -9,7 +9,7 @@
 use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_SZ, RegCloseKey, RegCreateKeyExW,
-    RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    RegDeleteValueW, RegEnumValueW, RegOpenKeyExW, RegQueryInfoKeyW, RegQueryValueExW, RegSetValueExW,
 };
 use windows::core::{HSTRING, Result};
 
@@ -49,7 +49,7 @@ fn open(root: HKEY, subkey: &HSTRING, write: bool) -> Result<HKEY> {
 }
 
 /// Reads a REG_SZ value, or `None` when the value or key is absent.
-fn read(root: HKEY, subkey: &HSTRING, value: &str) -> Result<Option<String>> {
+pub fn read(root: HKEY, subkey: &HSTRING, value: &str) -> Result<Option<String>> {
     let key = match open(root, subkey, false) {
         Ok(key) => key,
         Err(_) => return Ok(None),
@@ -78,7 +78,28 @@ fn read(root: HKEY, subkey: &HSTRING, value: &str) -> Result<Option<String>> {
     }
 }
 
-fn write(root: HKEY, subkey: &HSTRING, value: &str, data: &str) -> Result<()> {
+/// Names of all values in a key, used to enumerate the `Run` key.
+pub fn value_names(root: HKEY, subkey: &HSTRING) -> Result<Vec<String>> {
+    let key = open(root, subkey, false)?;
+    unsafe {
+        let mut count = 0u32;
+        RegQueryInfoKeyW(key, None, None, None, None, None, None,
+            Some(&mut count), None, None, None, None).ok()?;
+        let mut names = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let mut buffer = [0u16; 256];
+            let mut length = buffer.len() as u32;
+            RegEnumValueW(key, index, Some(windows::core::PWSTR(buffer.as_mut_ptr())), &mut length,
+                None, None, None, None).ok()?;
+            names.push(String::from_utf16_lossy(&buffer[..length as usize]));
+        }
+        _ = RegCloseKey(key);
+        Ok(names)
+    }
+}
+
+/// Writes a REG_SZ value, creating the key if needed.
+pub fn write(root: HKEY, subkey: &HSTRING, value: &str, data: &str) -> Result<()> {
     unsafe {
         let mut key = HKEY::default();
         RegCreateKeyExW(root, subkey, None, None, Default::default(), KEY_WRITE,
