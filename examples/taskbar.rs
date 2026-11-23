@@ -311,10 +311,9 @@ fn window_icon(surface: &Surface, hwnd: HWND) -> Option<windows::Win32::Graphics
 
 /// Window under a task-button x coordinate (DIPs from the bar's left edge).
 fn button_at(app: &App, x: f32) -> Option<HWND> {
-    let width = 160.0;
-    let gap = 8.0;
-    let index = ((x - 16.0) / (width + gap)) as isize;
-    if index < 0 || x - 16.0 - index as f32 * (width + gap) > width {
+    let width = 48.0;
+    let index = ((x - 8.0) / width) as isize;
+    if index < 0 || x - 8.0 - index as f32 * width > width {
         return None;
     }
     app.windows.get(index as usize).map(|info| info.hwnd)
@@ -474,27 +473,20 @@ impl App {
         if let Some(c) = t.high_contrast {
             s.fill_round(rect(0.0, 0.0, w, h), 0.0, c.window);
         }
-        let button_width = 160.0;
-        let button_gap = 8.0;
-        let task_area = rect(16.0, 4.0, w - 260.0, h - 4.0);
+        // Measured on the real Windows 11 bar: 48-DIP slots with a 24-DIP
+        // centred icon, no title, and a short indicator under the active one.
+        let button_width = 48.0;
+        let task_area = rect(8.0, 0.0, w - 260.0, h);
         s.with_clip(task_area, |s| {
-            for (i, (title, active, icon)) in buttons.iter().enumerate() {
-                let x = 16.0 + i as f32 * (button_width + button_gap);
-                let r = rect(x, 4.0, x + button_width, h - 4.0);
+            for (i, (_title, active, icon)) in buttons.iter().enumerate() {
+                let x = 8.0 + i as f32 * button_width;
                 if *active {
-                    s.fill_round(r, 4.0, t.subtle_hover);
-                    s.fill_round(rect(x, r.bottom - 3.0, x + button_width, r.bottom), 1.0, t.accent);
+                    s.fill_round(rect(x + 4.0, 0.0, x + button_width - 4.0, h), 4.0, t.subtle_hover);
+                    s.fill_round(rect(x + 16.0, h - 3.0, x + button_width - 16.0, h), 1.0, t.accent);
                 }
-                let text_x = if let Some(bitmap) = icon {
-                    icons::draw(s, bitmap, x + 6.0, (h - 16.0) / 2.0, 16.0);
-                    x + 28.0
-                } else {
-                    x + 10.0
-                };
-                let label: String = title.chars().take(20).collect();
-                s.with_clip(r, |s| {
-                    s.text_no_wrap(&label, &f.switch, rect(text_x, r.top, r.right - 10.0, r.bottom), t.text_primary);
-                });
+                if let Some(bitmap) = icon {
+                    icons::draw(s, bitmap, x + 12.0, (h - 24.0) / 2.0, 24.0);
+                }
             }
         });
         let (time, date) = locale_text();
