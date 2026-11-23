@@ -14,8 +14,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, GetWindowThreadProcessId, HWND_BROADCAST, PostMessageW, RegisterClassW,
-    RegisterWindowMessageW,
+    CreateWindowExW, DestroyIcon, DestroyWindow, GetWindowThreadProcessId, HWND_BROADCAST,
+    PostMessageW, RegisterClassW, RegisterWindowMessageW,
     WM_COPYDATA, WM_CONTEXTMENU, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
@@ -283,6 +283,21 @@ impl Tray {
             }
         }
         Ok(())
+    }
+}
+
+impl Drop for Tray {
+    /// Frees the copied icons and the host window. Without this, a second
+    /// [`Tray::install`] would replace the thread-local and leak both.
+    fn drop(&mut self) {
+        for entry in self.icons.drain(..) {
+            if !entry.icon.0.is_null() {
+                unsafe { _ = DestroyIcon(entry.icon) };
+            }
+        }
+        if !self.hwnd.0.is_null() {
+            unsafe { _ = DestroyWindow(self.hwnd) };
+        }
     }
 }
 
