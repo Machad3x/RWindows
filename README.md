@@ -465,6 +465,10 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 
 `shell_registration::ShellRegistration` altera só o valor `Shell` em `HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon`, salva o valor anterior em `HKCU\Software\RWindows\OriginalShell` e nunca toca no `HKLM` — os testes usam chaves descartáveis em `HKCU\Software\RWindowsTest` e cobrem instalar, reinstalar (idempotente) e desinstalar. `shell_ctl.exe status | install <caminho> | uninstall` expõe isso; `install` exige um caminho existente e nunca se registra a si mesmo (isso deixaria a máquina sem shell depois do logoff). Verificado nesta máquina apenas `status`: reportou "Shell is not set", igual ao `reg query`. O mecanismo vem de documentação comunitária, não de API oficial da Microsoft: **não foi testado com logoff**, então suspenso até teste em VM. A troca real exige logoff, e o diretório de trabalho do processo iniciado pode ser `C:\Windows\System32` — nada no código depende do diretório atual.
 
+### Bandeja
+
+`tray.rs` registra uma janela oculta da classe `Shell_TrayWnd`, que é o contrato do Windows: `Shell_NotifyIcon` entrega `WM_COPYDATA` com `dwData = 1` e um `NOTIFYICONDATA` neutro em plataforma (handles de 32 bits mesmo em x64). Por isso os offsets são constantes nomeadas e testadas, não um cast para a struct x64 do windows-rs — cast daria campos deslocados. O módulo interpreta NIM_ADD/MODIFY/DELETE/SETVERSION, guarda o HICON com `CopyIcon` e reproduz os eventos de clique que o Explorer envia. **Não é uma cópia da implementação do WinRust**: ele usa GDI/GDI+ e offsets literais; aqui o desenho continua sendo D2D/DirectComposition do RWindows e o parsing é isolado, nomeado e coberto por testes. Não foi executado com o Explorer vivo (as duas janelas competiriam); o teste real exige VM sem Explorer como shell. Faltam duplo clique, balões, menus e desenho dos ícones na barra.
+
 ## Verificações não feitas
 
 Quatro caminhos ficaram sem verificação prática nesta máquina, por limites concretos:

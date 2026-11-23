@@ -35,6 +35,7 @@ pub mod shell_registration;
 pub mod slider;
 pub mod text_box;
 pub mod theme;
+pub mod tray;
 pub mod toggle_switch;
 pub mod tooltip;
 pub mod uia;

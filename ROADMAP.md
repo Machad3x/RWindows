@@ -73,7 +73,7 @@ Modo de desenvolvimento **seguro**: o shell roda como um aplicativo comum, com o
 
 - [ ] **Registrar como shell**: implementado em `shell_registration.rs` + `shell_ctl.exe` — só HKCU, valor anterior salvo, uninstall restaura, `install` exige caminho existente e nunca registra a si mesmo. Testado em chaves descartáveis e `status` verificado contra a chave real. ❓ A troca com logoff ainda não foi testada (documentação comunitária, não API oficial); confirmar em VM antes de usar como shell diário.
 - [ ] **Desktop**: papel de parede, ícones da área de trabalho, menu de contexto, arrastar e soltar. ❓ Qual janela hospeda o desktop (classe `Progman`/`WorkerW`) e como usar `IShellView` sem o `explorer.exe`.
-- [ ] **Bandeja completa** (ícones, balões, menus, ocultar/mostrar), compatível com os apps existentes.
+- [ ] **Bandeja completa**: `tray.rs` já recebe `WM_COPYDATA` de `Shell_NotifyIcon` via janela `Shell_TrayWnd`, interpreta ADD/MODIFY/DELETE/SETVERSION, copia HICONs e reproduz cliques; parsing testado. ❓ Não executado com Explorer vivo (conflito de janelas) — exige VM. Faltam duplo clique, balões, menus, ordem/ocultação e desenho dos ícones na barra.
 - [ ] **Inicialização de apps**: ❓ quem processa as chaves `Run` e a pasta Startup quando o shell não é o Explorer (a suspeita é que seja o próprio shell, então ele precisa fazer isso).
 - [ ] **Sessão**: bloquear, trocar usuário, sair, reiniciar, desligar, suspender, hibernar.
 - [ ] **Watchdog**: o `Shell Launcher` da Microsoft monitora a saída do shell e age conforme o código de saída (reinicia, por exemplo); o nosso precisa de um equivalente para nunca deixar o usuário sem shell.
