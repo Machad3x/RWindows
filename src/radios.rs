@@ -30,10 +30,18 @@ fn block<T: RuntimeType + 'static>(op: IAsyncOperation<T>) -> Result<T> {
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut context = Context::from_waker(&waker);
     let mut future = std::pin::pin!(future);
+    // A WinRT operation that never completes must not freeze the UI thread.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         match future.as_mut().poll(&mut context) {
             Poll::Ready(result) => return result,
-            Poll::Pending => std::thread::park_timeout(Duration::from_millis(50)),
+            Poll::Pending => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(windows::core::Error::from_hresult(
+                        windows::Win32::Foundation::ERROR_TIMEOUT.to_hresult()));
+                }
+                std::thread::park_timeout(Duration::from_millis(50));
+            }
         }
     }
 }

@@ -338,6 +338,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 fn main() -> Result<()> {
     quick_settings::init_com();
     unsafe {
+        _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let instance = GetModuleHandleW(None)?;
         let class = w!("fluent-win-quick-settings");
         RegisterClassW(&WNDCLASSW {
@@ -348,10 +350,12 @@ fn main() -> Result<()> {
             ..Default::default()
         });
         // Bottom-right of the work area, above whatever the taskbar is.
+        let k = metrics::scale();
         let (x, y) = metrics::bottom_right(WIDTH, HEIGHT, 16.0);
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class,
             w!("fluent-win · Configurações rápidas"), WS_POPUP | WS_VISIBLE,
-            x, y, WIDTH as i32, HEIGHT as i32, None, None, Some(instance.into()), None)?;
+            x, y, (WIDTH * k).round() as i32, (HEIGHT * k).round() as i32,
+            None, None, Some(instance.into()), None)?;
         // A real flyout takes focus when it opens; without this the launching
         // shell immediately takes it back and our WM_ACTIVATE handler closes us.
         _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(hwnd,

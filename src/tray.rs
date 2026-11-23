@@ -81,6 +81,8 @@ pub struct IconData {
     pub guid: [u8; 16],
     /// Raw 32-bit HICON from the payload, zero when NIF_ICON is absent.
     pub hicon: usize,
+    /// NIF_* flags present in this message, so MODIFY only touches set fields.
+    pub flags: u32,
 }
 
 fn u32_at(data: &[u8], offset: usize) -> u32 {
@@ -124,6 +126,7 @@ pub fn parse(data: &[u8]) -> Option<(Operation, IconData)> {
         } else {
             0
         },
+        flags,
     };
     let operation = match u32_at(data, OFF_OP) {
         0 => Operation::Add,
@@ -213,11 +216,17 @@ impl Tray {
                         self.icons[index].icon = copied;
                     }
                 }
-                if incoming.hidden {
-                    self.icons[index].data.hidden = true;
+                // MODIFY carries only the fields its NIF_* flags name; keep the
+                // rest so an icon-only update does not erase callback/tip.
+                if incoming.flags & NIF_STATE != 0 {
+                    self.icons[index].data.hidden = incoming.hidden;
                 }
-                self.icons[index].data.tip = incoming.tip;
-                self.icons[index].data.callback = incoming.callback;
+                if incoming.flags & NIF_TIP != 0 {
+                    self.icons[index].data.tip = incoming.tip;
+                }
+                if incoming.flags & NIF_MESSAGE != 0 {
+                    self.icons[index].data.callback = incoming.callback;
+                }
             }
             _ => {}
         }
@@ -397,6 +406,21 @@ mod tests {
         let (_, shown) = parse(&payload(0, NIF_STATE, 1, 0, false, 0)).unwrap();
         assert!(hidden.hidden);
         assert!(!shown.hidden);
+    }
+
+    #[test]
+    fn modify_with_only_icon_should_keep_callback_and_tip() {
+        let mut tray = Tray { hwnd: HWND(ptr::null_mut()), icons: Vec::new() };
+        let mut add = payload(0, NIF_MESSAGE | NIF_TIP, 9, 0x700, false, 4);
+        for (i, u) in "Dica".encode_utf16().enumerate() {
+            add[OFF_TIP + i * 2..OFF_TIP + i * 2 + 2].copy_from_slice(&u.to_le_bytes());
+        }
+        let (_, icon) = parse(&add).unwrap();
+        tray.apply(Operation::Add, icon);
+        let (_, modify) = parse(&payload(1, NIF_ICON, 9, 0, false, 4)).unwrap();
+        tray.apply(Operation::Modify, modify);
+        assert_eq!(tray.icons[0].data.callback, 0x700);
+        assert_eq!(tray.icons[0].data.tip, "Dica");
     }
 
     #[test]

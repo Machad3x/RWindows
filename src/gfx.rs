@@ -269,8 +269,12 @@ impl Surface {
         self._target = None;
         // Best effort: on a lost device Commit may fail, the release still happens.
         unsafe { _ = self._dcomp.Commit() };
+        // Keep the counter monotonic across recreations: `Self::new` resets it
+        // to 0, which would make a second device loss look like the first and
+        // leave device-bound bitmaps (icons) unreloaded.
+        let next = self.generation + 1;
         *self = Self::new(self.hwnd)?;
-        self.generation += 1;
+        self.generation = next;
         Ok(())
     }
 
@@ -567,6 +571,16 @@ mod tests {
             CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, w!("STATIC"), w!(""), WS_POPUP,
                 0, 0, 64, 64, None, None, None, None).unwrap()
         }
+    }
+
+    #[test]
+    fn generation_should_stay_monotonic_across_recreations() {
+        let mut surface = Surface::new(hidden_window()).unwrap();
+        surface.recreate().unwrap();
+        let first = surface.generation();
+        surface.recreate().unwrap();
+        assert_eq!(surface.generation(), first + 1);
+        assert!(first >= 1);
     }
 
     #[test]

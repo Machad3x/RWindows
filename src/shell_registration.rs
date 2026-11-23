@@ -8,9 +8,11 @@
 
 use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_SZ, RegCloseKey, RegCreateKeyExW,
-    RegDeleteValueW, RegEnumValueW, RegOpenKeyExW, RegQueryInfoKeyW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ, RegCloseKey,
+    RegCreateKeyExW, RegDeleteValueW, RegEnumValueW, RegOpenKeyExW, RegQueryInfoKeyW,
+    RegQueryValueExW, RegSetValueExW,
 };
+use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
 use windows::core::{HSTRING, Result};
 
 /// Real per-user Winlogon key.
@@ -59,7 +61,7 @@ pub fn read(root: HKEY, subkey: &HSTRING, value: &str) -> Result<Option<String>>
         let mut kind = Default::default();
         let mut size = 0u32;
         let status = RegQueryValueExW(key, &name, None, Some(&mut kind), None, Some(&mut size));
-        if status != WIN32_ERROR(0) || kind != REG_SZ || size == 0 {
+        if status != WIN32_ERROR(0) || (kind != REG_SZ && kind != REG_EXPAND_SZ) || size == 0 {
             _ = RegCloseKey(key);
             return Ok(None);
         }
@@ -74,7 +76,16 @@ pub fn read(root: HKEY, subkey: &HSTRING, value: &str) -> Result<Option<String>>
             .take(units)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
-        Ok(String::from_utf16_lossy(&text).trim_end_matches('\0').to_owned().into())
+        let raw = String::from_utf16_lossy(&text).trim_end_matches('\0').to_owned();
+        // Run keys often use %ProgramFiles% etc. (REG_EXPAND_SZ).
+        if kind == REG_EXPAND_SZ {
+            let mut expanded = [0u16; 1024];
+            let n = ExpandEnvironmentStringsW(&HSTRING::from(raw.as_str()), Some(&mut expanded));
+            if n > 0 && (n as usize) <= expanded.len() {
+                return Ok(Some(String::from_utf16_lossy(&expanded[..n as usize - 1])));
+            }
+        }
+        Ok(Some(raw))
     }
 }
 
@@ -136,9 +147,13 @@ impl ShellRegistration {
         if current.as_deref() == Some(exe) {
             return Ok(());
         }
-        match current {
-            Some(value) => write(HKEY_CURRENT_USER, &self.settings, ORIGINAL, &value)?,
-            None => _ = remove(HKEY_CURRENT_USER, &self.settings, ORIGINAL),
+        // Keep the FIRST original (usually explorer.exe). A second install with
+        // a different exe must not overwrite the backup with our own shell.
+        if read(HKEY_CURRENT_USER, &self.settings, ORIGINAL)?.is_none() {
+            match current {
+                Some(value) => write(HKEY_CURRENT_USER, &self.settings, ORIGINAL, &value)?,
+                None => _ = remove(HKEY_CURRENT_USER, &self.settings, ORIGINAL),
+            }
         }
         write(HKEY_CURRENT_USER, &self.winlogon, SHELL, exe)
     }
@@ -207,6 +222,19 @@ mod tests {
         assert_eq!(read(HKEY_CURRENT_USER, &reg.settings, ORIGINAL).unwrap().as_deref(),
             Some("explorer.exe"));
         reg.uninstall().unwrap();
+    }
+
+    #[test]
+    fn second_install_should_not_overwrite_the_original_backup() {
+        let reg = fixture("backup");
+        reg.uninstall().unwrap();
+        write(HKEY_CURRENT_USER, &reg.winlogon, SHELL, "explorer.exe").unwrap();
+        reg.install("a.exe").unwrap();
+        reg.install("b.exe").unwrap();
+        assert_eq!(read(HKEY_CURRENT_USER, &reg.settings, ORIGINAL).unwrap().as_deref(),
+            Some("explorer.exe"));
+        reg.uninstall().unwrap();
+        assert_eq!(reg.current().unwrap().as_deref(), Some("explorer.exe"));
     }
 
     #[test]

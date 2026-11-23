@@ -315,6 +315,11 @@ fn window_icon(surface: &Surface, hwnd: HWND) -> Option<windows::Win32::Graphics
 /// Window under a task-button x coordinate (DIPs from the bar's left edge).
 fn button_at(app: &App, x: f32) -> Option<HWND> {
     let width = BUTTON_WIDTH;
+    // Same right limit as the drawing clip, so the clock area is not clickable.
+    let (w, _) = app.surface.size();
+    if x < 8.0 || x > w - 260.0 {
+        return None;
+    }
     let index = ((x - 8.0) / width) as isize;
     if index < 0 || x - 8.0 - index as f32 * width > width {
         return None;

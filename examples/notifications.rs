@@ -182,6 +182,8 @@ thread_local! {
 
 fn main() -> Result<()> {
     unsafe {
+        _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let instance = GetModuleHandleW(None)?;
         let class = w!("fluent-win-notifications");
         RegisterClassW(&WNDCLASSW {
@@ -199,7 +201,8 @@ fn main() -> Result<()> {
         let (x, y) = metrics::bottom_right(W, height as f32, 8.0);
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class,
             w!("fluent-win · Notificações"), WS_POPUP | WS_VISIBLE,
-            x, y, W as i32, height, None, None, Some(instance.into()), None)?;
+            x, y, (W * k).round() as i32, (height as f32 * k).round() as i32,
+            None, None, Some(instance.into()), None)?;
         let theme = Theme::system();
         _ = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark);
         let surface = Surface::new(hwnd)?;
