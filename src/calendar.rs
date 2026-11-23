@@ -1,7 +1,9 @@
 //! Calendar grid for the notification center. Pure date math, no crate.
 //! Weekdays follow Windows: Sunday = 0.
 
-use windows::Win32::Globalization::{GetLocaleInfoEx, LOCALE_SABBREVDAYNAME1, LOCALE_SMONTHNAME1};
+use windows::Win32::Globalization::{
+    GetLocaleInfoEx, LOCALE_SABBREVDAYNAME1, LOCALE_SDAYNAME1, LOCALE_SMONTHNAME1,
+};
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::core::PCWSTR;
 
@@ -116,6 +118,16 @@ pub fn grid_full(year: i32, month: u32) -> Vec<(u32, bool)> {
         }
     }
     cells
+}
+
+/// Full weekday name in the user's locale, Sunday = 0.
+pub fn weekday_long_name(weekday: u32) -> String {
+    let constant = if weekday == 0 { LOCALE_SDAYNAME1 + 6 } else { LOCALE_SDAYNAME1 + weekday - 1 };
+    let mut buffer = [0u16; 32];
+    unsafe {
+        GetLocaleInfoEx(PCWSTR::null(), constant, Some(&mut buffer));
+    }
+    String::from_utf16_lossy(&buffer).trim_end_matches('\0').to_owned()
 }
 
 #[cfg(test)]

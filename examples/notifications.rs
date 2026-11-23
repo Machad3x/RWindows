@@ -92,7 +92,7 @@ impl App {
 
         s.fill_round(rect(0.0, cal_top, w, cal_top + 1.0), 0.0, t.divider);
         let long_date = format!("{}, {} de {}",
-            weekday_long(calendar::weekday(self.today)), self.today.day,
+            calendar::weekday_long_name(calendar::weekday(self.today)), self.today.day,
             calendar::month_name(self.today.month));
         s.text_no_wrap(&long_date, &self.head,
             rect(PAD, cal_top + 8.0, w - PAD - 30.0, cal_top + CAL_HEADER), t.text_primary);
@@ -148,14 +148,6 @@ impl App {
             rect(w - 64.0, focus_top, w - PAD - 4.0, focus_top + pill_h), t.text_primary);
         s.end()
     }
-}
-
-fn weekday_long(weekday: u32) -> &'static str {
-    const NAMES: [&str; 7] = [
-        "domingo", "segunda-feira", "terça-feira", "quarta-feira",
-        "quinta-feira", "sexta-feira", "sábado",
-    ];
-    NAMES.get(weekday as usize).copied().unwrap_or("")
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
