@@ -10,12 +10,14 @@
 #![deny(missing_docs)]
 
 pub mod app_bar;
+pub mod app_list;
 pub mod backdrop;
 pub mod button;
 pub mod check_box;
 pub mod easing;
 pub mod flyout;
 pub mod gfx;
+pub mod grid_view;
 pub mod icons;
 pub mod layout;
 pub mod list_view;

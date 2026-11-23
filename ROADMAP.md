@@ -62,7 +62,7 @@ Modo de desenvolvimento **seguro**: o shell roda como um aplicativo comum, com o
 
 ## Fase 3 — Iniciar, Configurações rápidas, Central de notificações
 
-- [ ] **Iniciar**: fixados (grade), recomendados, lista de todos os apps, busca, botão de energia. ❓ Fonte da lista de apps e dos fixados (pastas do Menu Iniciar, `AppsFolder`, apps empacotados).
+- [ ] **Iniciar**: grade de fixados virtualizada, ícones reais e busca implementados em `examples/start.rs` e verificados no Windows; falta lista de recomendados, busca de arquivos/configurações, botão de energia e UIA. ❓ Lista de fixados reais fica em banco não documentado; usamos os apps instalados das pastas do Menu Iniciar.
 - [ ] **Configurações rápidas**: Wi-Fi, Bluetooth, modo avião, brilho, volume (o Slider e o ToggleButton já existem). ❓ APIs de cada um (WinRT `Radios`, `IAudioEndpointVolume`, brilho por WMI/DDC).
 - [ ] **Central de notificações e calendário**. ❓ Como receber as notificações dos apps (`UserNotificationListener` exige permissão e identidade de pacote).
 - [ ] Atalhos globais: tecla Windows, Win+D, Win+E, Win+L, Alt+Tab. ❓ Quais o Winlogon/explorer tratam e quais o shell precisa registrar.
