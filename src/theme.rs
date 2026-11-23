@@ -28,7 +28,7 @@ pub const SUBTLE_TRANSPARENT: D2D1_COLOR_F = argb(0x00FFFFFF);
 /// Quick Settings). The DWM supplies the blurred backdrop; this keeps it
 /// subdued and follows the system light/dark theme. Fluent design token,
 /// not a value sampled from one screenshot.
-pub const ACRYLIC_TINT_DARK: D2D1_COLOR_F = argb(0xD0202020);
+pub const ACRYLIC_TINT_DARK: D2D1_COLOR_F = argb(0xEC202020);
 /// Light theme counterpart of [`ACRYLIC_TINT_DARK`].
 pub const ACRYLIC_TINT_LIGHT: D2D1_COLOR_F = argb(0xD0F3F3F3);
 

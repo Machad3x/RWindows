@@ -35,7 +35,7 @@ struct App {
     theme: Theme,
     formats: Formats,
     today: Date,
-    cells: Vec<Option<u32>>,
+    cells: Vec<(u32, bool)>,
 }
 
 impl App {
@@ -53,9 +53,15 @@ impl App {
         s.text_no_wrap("Limpar tudo", &f.caption,
             rect(w - 104.0, 16.0, w - PAD - 4.0, 40.0), t.text_secondary);
 
+        // Real toasts need a packaged identity; this card keeps the shape and
+        // spacing of the real ones without inventing notifications.
         s.fill_round(rect(PAD, 56.0, w - PAD, 148.0), 6.0, t.control_alt_fill_secondary);
+        s.text_no_wrap("\u{E7E7}", &symbol,
+            rect(PAD + 12.0, 72.0, PAD + 44.0, 104.0), t.text_secondary);
         s.text_no_wrap("Nenhuma nova notificação", &f.caption,
-            rect(PAD + 12.0, 88.0, w - PAD - 12.0, 116.0), t.text_secondary);
+            rect(PAD + 48.0, 72.0, w - PAD - 12.0, 96.0), t.text_primary);
+        s.text_no_wrap("As notificações dos aplicativos aparecem aqui",
+            &f.caption, rect(PAD + 48.0, 96.0, w - PAD - 12.0, 132.0), t.text_secondary);
 
         s.fill_round(rect(0.0, CAL_TOP, w, CAL_TOP + 1.0), 0.0, t.divider);
         let long_date = format!("{}, {} de {}",
@@ -79,23 +85,23 @@ impl App {
             let left = PAD + col as f32 * cell_w;
             // Real panel uses single-letter weekdays from the locale.
             let name = calendar::weekday_name(col);
-            let initial: String = name.chars().take(1).collect();
+            let initial: String = name.chars().take(1).flat_map(char::to_uppercase).collect();
             s.text_no_wrap(&initial, &f.caption,
                 rect(left, WEEK_TOP, left + cell_w, WEEK_TOP + 24.0), t.text_secondary);
         }
-        for (index, day) in self.cells.iter().enumerate() {
-            let Some(day) = day else { continue };
+        for (index, (day, in_month)) in self.cells.iter().enumerate() {
             let col = index % 7;
             let row = index / 7;
             let left = PAD + col as f32 * cell_w;
             let top = GRID_TOP + row as f32 * CELL;
-            if *day == self.today.day {
+            let today = *in_month && *day == self.today.day;
+            if today {
                 s.fill_round(rect(left + 8.0, top + 2.0, left + cell_w - 8.0, top + CELL - 6.0),
                     12.0, t.accent);
             }
             s.text_no_wrap(&day.to_string(), &f.caption,
                 rect(left, top, left + cell_w, top + CELL - 4.0),
-                if *day == self.today.day { t.text_on_accent } else { t.text_primary });
+                if *in_month { t.text_primary } else { t.text_secondary });
         }
 
         s.fill_round(rect(PAD, FOCUS_TOP, 26.0, FOCUS_TOP + 28.0), 6.0, t.control_alt_fill_secondary);
@@ -170,7 +176,7 @@ fn main() -> Result<()> {
         let surface = Surface::new(hwnd)?;
         let formats = Formats::new(&surface)?;
         let today = calendar::today();
-        let cells = calendar::grid(today.year, today.month);
+        let cells = calendar::grid_full(today.year, today.month);
         APP.with(|cell| *cell.borrow_mut() = Some(App { surface, theme, formats, today, cells }));
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {

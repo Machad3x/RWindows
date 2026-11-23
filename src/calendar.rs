@@ -98,6 +98,26 @@ pub fn weekday_name(weekday: u32) -> String {
     String::from_utf16_lossy(&buffer).trim_end_matches('\0').to_owned()
 }
 
+/// Six-week grid with the adjacent month's days filling the padding, like
+/// the Windows 11 calendar. `false` means the day belongs to another month.
+pub fn grid_full(year: i32, month: u32) -> Vec<(u32, bool)> {
+    let lead = weekday(Date { year, month, day: 1 }) as usize;
+    let days = days_in_month(year, month);
+    let (previous_year, previous_month) = if month == 1 { (year - 1, 12) } else { (year, month - 1) };
+    let previous_days = days_in_month(previous_year, previous_month);
+    let mut cells = Vec::with_capacity(42);
+    for index in 0..42 {
+        if index < lead {
+            cells.push((previous_days - lead as u32 + 1 + index as u32, false));
+        } else if index < lead + days as usize {
+            cells.push(((index - lead + 1) as u32, true));
+        } else {
+            cells.push(((index - lead - days as usize + 1) as u32, false));
+        }
+    }
+    cells
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
