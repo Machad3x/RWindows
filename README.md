@@ -461,6 +461,10 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 
 `calendar.rs` calcula dia da semana, dias do mês (incluindo bissextos) e uma grade fixa de 6 semanas sem dependências. `examples/notifications.rs` desenha o mês atual com o dia real destacado e um lugar para notificações; verificado no Windows 26H2 (22 de novembro de 2026 em destaque, igual ao relógio local). A primeira captura revelou que `UNIX_EPOCH` dava o dia UTC — trocado por `GetLocalTime` (`shortcut:` corrigido, não deixado). Limite: a lista de notificações é um espaço reservado. `UserNotificationListener` exige identidade de pacote, que um executável avulso não tem; uma futura versão empacotada pode preenchê-lo. Sem navegação entre meses, UIA própria nem toasts.
 
+## Desempenho
+
+O flyout de Configurações Rápidas só repinta o Direct2D quando um slider muda de valor: `WM_MOUSEMOVE` sem captura ativa não gera desenho. `radios::block` trocou o polling de 2 ms por `IntoFuture` com um waker que desperta a thread; um `park_timeout` de 50 ms cobre a corrida entre `poll` e `park`, então não há spin nem risco de dormir para sempre. Verificado no Windows 26H2: rádios continuam sendo lidos (Wi-Fi e Bluetooth ligados).
+
 ## Fase 4 — Registro do shell
 
 `shell_registration::ShellRegistration` altera só o valor `Shell` em `HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon`, salva o valor anterior em `HKCU\Software\RWindows\OriginalShell` e nunca toca no `HKLM` — os testes usam chaves descartáveis em `HKCU\Software\RWindowsTest` e cobrem instalar, reinstalar (idempotente) e desinstalar. `shell_ctl.exe status | install <caminho> | uninstall` expõe isso; `install` exige um caminho existente e nunca se registra a si mesmo (isso deixaria a máquina sem shell depois do logoff). Verificado nesta máquina apenas `status`: reportou "Shell is not set", igual ao `reg query`. O mecanismo vem de documentação comunitária, não de API oficial da Microsoft: **não foi testado com logoff**, então suspenso até teste em VM. A troca real exige logoff, e o diretório de trabalho do processo iniciado pode ser `C:\Windows\System32` — nada no código depende do diretório atual.

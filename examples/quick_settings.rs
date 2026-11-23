@@ -193,14 +193,17 @@ impl App {
         false
     }
 
-    fn move_to(&mut self, x: f32, y: f32) {
+    /// Returns whether a slider value changed, so the caller can skip a full
+    /// Direct2D repaint on mouse moves that touch no control.
+    fn move_to(&mut self, x: f32, y: f32) -> bool {
         let (before_v, before_b) = (self.volume_slider.value(), self.brightness_slider.value());
         match self.captured {
             1 => { _ = self.volume_slider.handle(Input::PointerMove(x, y)); }
             2 => { _ = self.brightness_slider.handle(Input::PointerMove(x, y)); }
-            _ => return,
+            _ => return false,
         }
         self.apply_values(before_v, before_b);
+        self.volume_slider.value() != before_v || self.brightness_slider.value() != before_b
     }
 
     fn up(&mut self, x: f32, y: f32) {
@@ -248,8 +251,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }),
         WM_MOUSEMOVE => with_app(|app| {
             let (x, y) = app.point(lp);
-            app.move_to(x, y);
-            app.render()
+            if app.move_to(x, y) {
+                app.render()?;
+            }
+            Ok(())
         }),
         WM_LBUTTONUP => with_app(|app| {
             let (x, y) = app.point(lp);

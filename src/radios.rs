@@ -1,20 +1,41 @@
 //! Radio state through WinRT `Windows.Devices.Radios` (documented API).
 //! COM must be initialized on the calling thread before [`Radios::load`].
 
+use std::future::IntoFuture;
+use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use windows::Devices::Radios::{Radio, RadioAccessStatus, RadioKind, RadioState};
-use windows::core::{Interface, Result, RuntimeType};
-use windows_future::{AsyncStatus, IAsyncInfo, IAsyncOperation};
+use windows::core::{Result, RuntimeType};
+use windows_future::IAsyncOperation;
 
-/// Waits for a WinRT async operation. These calls are rare (startup and a
-/// toggle), so a short poll beats pulling an executor into the shell.
-fn block<T: RuntimeType + 'static>(op: IAsyncOperation<T>) -> Result<T> {
-    let info: IAsyncInfo = op.cast()?;
-    while info.Status()? == AsyncStatus::Started {
-        std::thread::sleep(Duration::from_millis(2));
+struct Unpark(std::thread::Thread);
+
+impl Wake for Unpark {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
     }
-    op.GetResults()
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// Waits for a WinRT async operation without polling. The completion handler
+/// wakes the parked thread; the timeout also covers a completion that races
+/// between `poll` and `park`.
+fn block<T: RuntimeType + 'static>(op: IAsyncOperation<T>) -> Result<T> {
+    let future = op.into_future();
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut context = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(result) => return result,
+            Poll::Pending => std::thread::park_timeout(Duration::from_millis(50)),
+        }
+    }
 }
 
 /// One radio as shown in Quick Settings.
