@@ -32,9 +32,13 @@ const MIN_WIDTH: f32 = 154.0;
 const HEADER_GAP: f32 = 4.0;
 /// `FocusVisualMargin="-7,-3,-7,-3"`.
 const FOCUS_MARGIN: (f32, f32) = (7.0, 3.0);
-/// Movement before a press becomes a drag.
-/// shortcut: fixed 4 DIPs (the Windows default drag threshold, SM_CXDRAG = 4 px at 100%); read the system metric if it matters.
-const DRAG_THRESHOLD: f32 = 4.0;
+/// Movement before a press becomes a drag, in DIPs, from the user's
+/// `SM_CXDRAG` (4 px at 96 DPI by default).
+fn system_drag_threshold() -> f32 {
+    let pixels = unsafe { windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+        windows::Win32::UI::WindowsAndMessaging::SM_CXDRAG) };
+    (pixels as f32 / crate::metrics::scale()).max(1.0)
+}
 
 /// Knob size (width, height) per visual state.
 fn knob_size(visual: Visual) -> (f32, f32) {
@@ -90,6 +94,8 @@ pub struct ToggleSwitch {
     press_knob: f32,
     /// The press moved past the drag threshold (`m_wasDragged`).
     moved: bool,
+    /// Drag threshold in DIPs, from the system metric.
+    drag_threshold: f32,
     /// `m_handledKeyDown` for Space.
     space_down: bool,
     focus: Option<FocusKind>,
@@ -106,6 +112,9 @@ pub struct ToggleSwitch {
 
 impl ToggleSwitch {
     /// Enabled switch at `rect` (height from [`ToggleSwitch::desired_size`]).
+    /// The hit area defaults to the track plus the content gap because the
+    /// content cannot be measured here; use [`ToggleSwitch::layout`] for the
+    /// measured area WinUI hit-tests.
     pub fn new(header: &str, on_content: &str, off_content: &str, rect: D2D_RECT_F, on: bool) -> Self {
         let (w, h) = knob_size(Visual::Rest);
         Self {
@@ -113,7 +122,7 @@ impl ToggleSwitch {
             header: header.to_owned(),
             on_content: on_content.to_owned(),
             off_content: off_content.to_owned(),
-            area_width: rect.right - rect.left,
+            area_width: TRACK_W + GAP,
             on,
             enabled: true,
             pointer_over: false,
@@ -121,6 +130,7 @@ impl ToggleSwitch {
             press_x: 0.0,
             press_knob: 0.0,
             moved: false,
+            drag_threshold: system_drag_threshold(),
             space_down: false,
             focus: None,
             knob_x: Tween::idle(if on { TRAVEL } else { 0.0 }),
@@ -272,7 +282,7 @@ impl ToggleSwitch {
                 self.pointer_over = contains(self.row(), x, y);
                 if self.dragging {
                     let dx = x - self.press_x;
-                    self.moved |= dx.abs() >= DRAG_THRESHOLD;
+                    self.moved |= dx.abs() >= self.drag_threshold;
                     if self.moved {
                         // MoveDelta: the knob follows the pointer, within the track.
                         self.knob_x = Tween::idle((self.press_knob + dx).clamp(0.0, TRAVEL));
@@ -631,6 +641,19 @@ mod tests {
         s.area_width = TRACK_W + GAP + 60.0;
         let r = s.handle(Input::PointerDown(140.0, TRACK.1));
         assert_eq!((r, s.focus_target().right), (Response::default(), 112.0));
+    }
+
+    #[test]
+    fn new_should_hit_test_only_the_track_and_gap() {
+        let mut s = switch(false);
+        assert_eq!(s.handle(Input::PointerDown(140.0, TRACK.1)), Response::default());
+        assert_eq!(s.handle(Input::PointerDown(TRACK_W + GAP + 1.0, TRACK.1)), Response::default());
+        assert_ne!(s.handle(Input::PointerDown(TRACK_W + GAP - 1.0, TRACK.1)), Response::default());
+    }
+
+    #[test]
+    fn drag_threshold_should_come_from_the_system_metric() {
+        assert!(system_drag_threshold() >= 1.0);
     }
 
     #[test]
