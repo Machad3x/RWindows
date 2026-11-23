@@ -91,15 +91,13 @@ impl App {
             &f.caption, rect(PAD + 48.0, 96.0, w - PAD - 12.0, 132.0), t.text_secondary);
 
         s.fill_round(rect(0.0, cal_top, w, cal_top + 1.0), 0.0, t.divider);
-        let long_date = format!("{}, {} de {}",
-            calendar::weekday_long_name(calendar::weekday(self.today)), self.today.day,
-            calendar::month_name(self.today.month));
+        let long_date = calendar::long_date(self.today);
         s.text_no_wrap(&long_date, &self.head,
             rect(PAD, cal_top + 8.0, w - PAD - 30.0, cal_top + CAL_HEADER), t.text_primary);
         s.text_no_wrap("\u{E70D}", &symbol,
             rect(w - 32.0, cal_top + 8.0, w - PAD, cal_top + CAL_HEADER), t.text_secondary);
 
-        let month_title = format!("{} de {}", calendar::month_name(self.today.month), self.today.year);
+        let month_title = calendar::month_year(self.today);
         s.text_no_wrap(&month_title, &self.head,
             rect(PAD, month_top, w - PAD, month_top + MONTH_H), t.text_primary);
         s.text_no_wrap("\u{E70E}", &symbol,
@@ -108,10 +106,11 @@ impl App {
             rect(w - 34.0, month_top, w - PAD, month_top + MONTH_H), t.text_secondary);
 
         let cell_w = (w - 2.0 * PAD) / 7.0;
+        let first = calendar::first_day_of_week();
         for col in 0..7 {
             let left = PAD + col as f32 * cell_w;
             // Real panel uses single-letter weekdays from the locale.
-            let name = calendar::weekday_name(col);
+            let name = calendar::weekday_name((first + col as u32) % 7);
             let initial: String = name.chars().take(1).flat_map(char::to_uppercase).collect();
             s.text_no_wrap(&initial, &self.centered,
                 rect(left, week_top, left + cell_w, week_top + WEEK_H), t.text_secondary);

@@ -2,10 +2,12 @@
 //! Weekdays follow Windows: Sunday = 0.
 
 use windows::Win32::Globalization::{
-    GetLocaleInfoEx, LOCALE_SABBREVDAYNAME1, LOCALE_SDAYNAME1, LOCALE_SMONTHNAME1,
+    DATE_LONGDATE, GetDateFormatEx, GetLocaleInfoEx, LOCALE_IFIRSTDAYOFWEEK, LOCALE_SABBREVDAYNAME1,
+    LOCALE_SDAYNAME1, LOCALE_SMONTHNAME1, LOCALE_SYEARMONTH,
 };
+use windows::Win32::Foundation::SYSTEMTIME;
 use windows::Win32::System::SystemInformation::GetLocalTime;
-use windows::core::PCWSTR;
+use windows::core::{HSTRING, PCWSTR};
 
 /// A civil date in the Gregorian calendar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +69,8 @@ pub fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
-/// Six-week calendar grid for a month. `None` is a day outside the month.
+/// Six-week calendar grid for a month, starting on the user's first weekday.
+/// `None` is a day outside the month.
 pub fn grid(year: i32, month: u32) -> Vec<Option<u32>> {
     grid_full(year, month).into_iter()
         .map(|(day, in_month)| in_month.then_some(day))
@@ -96,10 +99,31 @@ pub fn weekday_name(weekday: u32) -> String {
     String::from_utf16_lossy(&buffer).trim_end_matches('\0').to_owned()
 }
 
+/// First day of the week from the user's locale, Sunday = 0. Windows reports
+/// it Monday-based (0 = Monday), and the default when unset is Sunday.
+pub fn first_day_of_week() -> u32 {
+    let mut buffer = [0u16; 4];
+    unsafe {
+        GetLocaleInfoEx(PCWSTR::null(), LOCALE_IFIRSTDAYOFWEEK, Some(&mut buffer));
+    }
+    let monday_based = String::from_utf16_lossy(&buffer)
+        .trim_end_matches('\0')
+        .trim()
+        .parse::<u32>()
+        .unwrap_or(6);
+    (monday_based + 1) % 7
+}
+
 /// Six-week grid with the adjacent month's days filling the padding, like
 /// the Windows 11 calendar. `false` means the day belongs to another month.
 pub fn grid_full(year: i32, month: u32) -> Vec<(u32, bool)> {
-    let lead = weekday(Date { year, month, day: 1 }) as usize;
+    grid_from(year, month, first_day_of_week())
+}
+
+/// Same grid, starting on `first_weekday` (Sunday = 0). Pure, for tests.
+pub fn grid_from(year: i32, month: u32, first_weekday: u32) -> Vec<(u32, bool)> {
+    let first = weekday(Date { year, month, day: 1 });
+    let lead = ((first + 7 - first_weekday % 7) % 7) as usize;
     let days = days_in_month(year, month);
     let (previous_year, previous_month) = if month == 1 { (year - 1, 12) } else { (year, month - 1) };
     let previous_days = days_in_month(previous_year, previous_month);
@@ -114,6 +138,44 @@ pub fn grid_full(year: i32, month: u32) -> Vec<(u32, bool)> {
         }
     }
     cells
+}
+
+fn system_time(date: Date) -> SYSTEMTIME {
+    SYSTEMTIME {
+        wYear: date.year as u16,
+        wMonth: date.month as u16,
+        wDay: date.day as u16,
+        ..Default::default()
+    }
+}
+
+/// Long date in the user's locale, e.g. "domingo, 23 de novembro de 2026".
+pub fn long_date(date: Date) -> String {
+    let mut buffer = [0u16; 128];
+    let n = unsafe {
+        GetDateFormatEx(None, DATE_LONGDATE, Some(&system_time(date)), None,
+            Some(&mut buffer), None)
+    };
+    String::from_utf16_lossy(&buffer[..n.max(0) as usize])
+}
+
+/// Month and year in the user's locale, e.g. "novembro de 2026".
+pub fn month_year(date: Date) -> String {
+    let mut pattern = [0u16; 64];
+    unsafe {
+        GetLocaleInfoEx(PCWSTR::null(), LOCALE_SYEARMONTH, Some(&mut pattern));
+    }
+    let pattern = String::from_utf16_lossy(&pattern);
+    let pattern = HSTRING::from(pattern.trim_end_matches('\0'));
+    if pattern.is_empty() {
+        return format!("{} {}", month_name(date.month), date.year);
+    }
+    let mut buffer = [0u16; 128];
+    let n = unsafe {
+        GetDateFormatEx(None, Default::default(), Some(&system_time(date)),
+            PCWSTR(pattern.as_ptr()), Some(&mut buffer), None)
+    };
+    String::from_utf16_lossy(&buffer[..n.max(0) as usize])
 }
 
 /// Full weekday name in the user's locale, Sunday = 0.
@@ -160,12 +222,22 @@ mod tests {
 
     #[test]
     fn grid_should_pad_to_six_weeks_of_seven_days() {
-        let cells = grid(2026, 11);
+        let cells = grid_from(2026, 11, 0);
         assert_eq!(cells.len(), 42);
         // 2026-11-01 is a Sunday, so the first row starts with day 1.
-        assert_eq!(cells[0], Some(1));
-        assert_eq!(cells.iter().flatten().count(), 30);
-        assert_eq!(cells[29], Some(30));
-        assert_eq!(cells[30], None);
+        assert_eq!(cells[0], (1, true));
+        assert_eq!(cells.iter().filter(|(_, in_month)| *in_month).count(), 30);
+        assert_eq!(cells[29], (30, true));
+        assert!(!cells[30].1);
+    }
+
+    #[test]
+    fn grid_should_start_on_the_locale_first_weekday() {
+        // Monday start: Sunday the 1st moves to the end of the first row.
+        let cells = grid_from(2026, 11, 1);
+        assert_eq!(cells[0], (26, false)); // 2026-10-26, a Monday
+        assert_eq!(cells[6], (1, true));
+        let first = first_day_of_week();
+        assert!(first < 7);
     }
 }
