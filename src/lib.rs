@@ -30,6 +30,7 @@ pub mod radios;
 pub mod progress;
 pub mod radio_button;
 pub mod scroll_viewer;
+pub mod session;
 pub mod slider;
 pub mod text_box;
 pub mod theme;
