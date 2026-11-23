@@ -47,6 +47,10 @@ const SCROLL_PAUSE: u32 = 45;
 const SCROLL_STEP: f32 = 0.25;
 
 // Glyphs from the official Segoe Fluent Icons 1.56 table (Microsoft Learn).
+// X offset of each glyph's *ink* centre inside its tile, measured on the real
+// flyout. Centring the text box is not enough: the symbol font has asymmetric
+// side bearings, so each glyph needs its own correction.
+const GLYPH_X: [f32; 6] = [28.0, 28.0, 65.0, 52.0, 59.0, 65.0];
 const TILES: [(&str, &str); 6] = [
     ("\u{E701}", "Disponível"),    // Wifi
     ("\u{E702}", "Não conectado"), // Bluetooth
@@ -116,19 +120,19 @@ impl App {
             let top = if row == 0 { ROW1_Y } else { ROW2_Y };
             let r = rect(left, top, left + TILE_W, top + TILE_H);
             s.fill_round(r, 6.0, if self.tiles[index].on { t.accent } else { t.control_alt_fill_secondary });
-            // Windows keeps the glyph on the left of an accent tile but
-            // centres it on an inactive one.
-            let glyph_left = if self.tiles[index].on { left + 12.0 } else { left + 30.0 };
+            // The symbol font has asymmetric side bearings: centre the ink,
+            // not the text box, using the offsets measured on the real flyout.
+            let glyph_left = left + GLYPH_X[index] - 15.0;
             s.text_no_wrap(TILES[index].0, &symbol,
-                rect(glyph_left, top + 4.0, glyph_left + 28.0, top + 36.0),
+                rect(glyph_left, top + 10.0, glyph_left + 30.0, top + 42.0),
                 if self.tiles[index].on { t.text_on_accent } else { t.text_primary });
             let small = s.icon_format(12.0)?;
             s.text_no_wrap("\u{E76C}", &small,
-                rect(left + TILE_W - 26.0, top + 12.0, left + TILE_W - 8.0, top + 40.0),
+                rect(left + TILE_W - 18.0, top + 12.0, left + TILE_W - 4.0, top + 40.0),
                 if self.tiles[index].on { t.text_on_accent } else { t.text_secondary });
             let label = TILES[index].1;
-            let label_rect = rect(left - 4.0, top + TILE_H + 2.0,
-                left + TILE_W - 4.0, top + TILE_H + 18.0);
+            let label_rect = rect(left, top + TILE_H + 2.0,
+                left + TILE_W, top + TILE_H + 18.0);
             let available = label_rect.right - label_rect.left;
             let (text_w, _) = s.measure(label, &f.caption)?;
             let chars: Vec<char> = label.chars().collect();
