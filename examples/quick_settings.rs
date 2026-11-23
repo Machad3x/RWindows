@@ -103,8 +103,9 @@ impl App {
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
         let symbol = s.icon_format(18.0)?;
         s.begin();
-        // WinUI card token: follows the user's theme and DWM backdrop. The
-        // exact gray depends on the wallpaper behind the window, like Acrylic.
+        // DWM TransientWindow supplies the blurred Acrylic; the theme tint
+        // keeps it subdued like the real flyout, in light or dark mode.
+        s.fill_round(rect(0.0, 0.0, w, h), 8.0, theme::acrylic_tint(t));
         s.fill_round(rect(0.0, 0.0, w, h), 8.0, t.card);
         for index in 0..6 {
             let col = index % 3;

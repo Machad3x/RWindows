@@ -24,6 +24,19 @@ pub const OVERLAY_RADIUS: f32 = 8.0;
 /// `SubtleFillColorTransparent` (same in dark and light).
 pub const SUBTLE_TRANSPARENT: D2D1_COLOR_F = argb(0x00FFFFFF);
 
+/// Tint layer painted over the DWM Acrylic of transient flyouts (Start,
+/// Quick Settings). The DWM supplies the blurred backdrop; this keeps it
+/// subdued and follows the system light/dark theme. Fluent design token,
+/// not a value sampled from one screenshot.
+pub const ACRYLIC_TINT_DARK: D2D1_COLOR_F = argb(0xD0202020);
+/// Light theme counterpart of [`ACRYLIC_TINT_DARK`].
+pub const ACRYLIC_TINT_LIGHT: D2D1_COLOR_F = argb(0xD0F3F3F3);
+
+/// Tint to paint over a transient flyout's Acrylic backdrop for `theme`.
+pub const fn acrylic_tint(theme: &Theme) -> D2D1_COLOR_F {
+    if theme.dark { ACRYLIC_TINT_DARK } else { ACRYLIC_TINT_LIGHT }
+}
+
 /// `0xAARRGGBB` to a Direct2D color (straight alpha).
 pub const fn argb(v: u32) -> D2D1_COLOR_F {
     D2D1_COLOR_F {

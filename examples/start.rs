@@ -12,7 +12,7 @@ use fluent_win::metrics;
 use fluent_win::panel::Formats;
 use fluent_win::session::{self, PowerAction};
 use fluent_win::text_box::TextBox;
-use fluent_win::theme::Theme;
+use fluent_win::theme::{self, Theme};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -136,7 +136,9 @@ impl App {
         let (w, h) = self.surface.size();
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
         s.begin();
-        // Card token composites over the DWM backdrop and follows the theme.
+        // DWM TransientWindow supplies the blurred Acrylic; the theme tint
+        // keeps it subdued like the real Start, in light or dark mode.
+        s.fill_round(rect(0.0, 0.0, w, h), 8.0, theme::acrylic_tint(t));
         s.fill_round(rect(0.0, 0.0, w, h), 8.0, t.card);
         self.search.draw(s, t, f, rect(SEARCH.0, SEARCH.1, SEARCH.2, SEARCH.3), false)?;
 
