@@ -54,7 +54,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_SHOW, SWP_NOZORDER, TranslateMessage, WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_DESTROY,
     WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
     WM_RBUTTONDOWN, WM_TIMER,
-    WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{BOOL, Result, w};
@@ -371,7 +371,9 @@ impl App {
         let origin = ((placed.left * k).round() as i32, (placed.top * k).round() as i32);
         let hwnd = unsafe {
             CreateWindowExW(
-                WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+                // Activatable so it receives the keyboard (Esc/arrows) and
+                // closes itself when focus moves away (light dismiss).
+                WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                 w!("fluent-win-taskbar-menu"), w!(""), WS_POPUP, origin.0, origin.1,
                 (w * k).round() as i32, (h * k).round() as i32, Some(self.hwnd), None, None, None)?
         };
@@ -387,6 +389,8 @@ impl App {
             });
         });
         unsafe { _ = ShowWindow(hwnd, SW_SHOW) };
+        // A menu takes the keyboard while it is open; losing it closes the menu.
+        unsafe { _ = SetForegroundWindow(hwnd) };
         Ok(())
     }
 

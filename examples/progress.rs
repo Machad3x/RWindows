@@ -12,7 +12,7 @@ use fluent_win::progress::{ProgressBar, ProgressRing};
 use fluent_win::radio_button::{MIN_WIDTH, ROW_HEIGHT, RadioButton, check_one};
 use fluent_win::text_box::TextBox;
 use fluent_win::theme::Theme;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::ValidateRect;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -27,8 +27,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IDC_ARROW,
     KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SIZE_MAXIMIZED, SIZE_MINIMIZED,
-    SIZE_RESTORED, SetTimer, TranslateMessage, WM_CHAR, WM_DESTROY, WM_KEYDOWN, WM_KILLFOCUS,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_SETFOCUS, WM_SIZE, WM_TIMER,
+    SIZE_RESTORED, SWP_NOACTIVATE, SWP_NOZORDER, SetTimer, SetWindowPos, TranslateMessage,
+    WM_CHAR, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_PAINT, WM_SETFOCUS, WM_SIZE, WM_TIMER,
     WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{Result, w};
@@ -226,10 +227,24 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             _ = KillTimer(Some(hwnd), TIMER);
             LRESULT(0)
         },
-        WM_SIZE if wp.0 as u32 == SIZE_RESTORED || wp.0 as u32 == SIZE_MAXIMIZED => unsafe {
-            _ = SetTimer(Some(hwnd), TIMER, 33, None);
+        WM_SIZE if wp.0 as u32 == SIZE_RESTORED || wp.0 as u32 == SIZE_MAXIMIZED => {
+            // The swap chain follows the window, so maximising is not a blank frame.
+            with_app(|a| {
+                a.surface.resize(loword(lp.0) as u16 as u32, hiword(lp.0) as u16 as u32)?;
+                a.render()
+            });
+            unsafe { _ = SetTimer(Some(hwnd), TIMER, 33, None) };
             LRESULT(0)
-        },
+        }
+        WM_DPICHANGED => {
+            with_app(|a| a.surface.set_dpi(f32::from(loword(wp.0 as isize) as u16)));
+            let r = unsafe { &*(lp.0 as *const RECT) };
+            unsafe {
+                _ = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            with_app(App::render)
+        }
         WM_TIMER if wp.0 == TIMER => with_app(|a| {
             a.time += 1.0 / 30.0;
             a.blink = ((a.time * 1.6) as u32).is_multiple_of(2);

@@ -80,34 +80,32 @@ pub fn display_name(path: &Path) -> String {
 }
 
 /// Installed apps from the Start Menu folders, deduplicated by path and sorted
-/// by name. `Programs` subfolders are included one level deep.
+/// by name. Subfolders are walked recursively, as Start's All apps does.
 pub fn enumerate() -> Result<Vec<AppInfo>> {
     let mut apps: Vec<AppInfo> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for folder in folders()? {
-        let entries = match std::fs::read_dir(&folder) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let candidates: Vec<PathBuf> = if path.is_dir() {
-                match std::fs::read_dir(&path) {
-                    Ok(children) => children.flatten().map(|child| child.path()).collect(),
-                    Err(_) => Vec::new(),
-                }
-            } else {
-                vec![path]
-            };
-            for path in candidates {
-                if !is_app_file(&path) || apps.iter().any(|app| app.path == path) {
-                    continue;
-                }
-                apps.push(AppInfo { name: display_name(&path), path });
-            }
-        }
+        collect_apps(&folder, 0, &mut apps, &mut seen);
     }
     apps.sort_by_key(|app| app.name.to_lowercase());
     Ok(apps)
+}
+
+/// Walks `dir`, adding app files once. Depth is capped so a deep or cyclic
+/// Start Menu cannot turn the scan into an unbounded walk.
+fn collect_apps(dir: &Path, depth: u32, apps: &mut Vec<AppInfo>, seen: &mut std::collections::HashSet<PathBuf>) {
+    const MAX_DEPTH: u32 = 4;
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if depth < MAX_DEPTH {
+                collect_apps(&path, depth + 1, apps, seen);
+            }
+        } else if is_app_file(&path) && seen.insert(path.clone()) {
+            apps.push(AppInfo { name: display_name(&path), path });
+        }
+    }
 }
 
 /// A group in the "Todos" view, built from a real Start Menu subfolder.
@@ -209,6 +207,23 @@ mod tests {
             ("middle", base + Duration::from_secs(10)),
         ];
         assert_eq!(newest(items, 2), vec!["newest", "middle"]);
+    }
+
+    #[test]
+    fn nested_folders_should_be_walked_once() {
+        let root = std::env::temp_dir().join(format!("fluent-win-apps-{}", std::process::id()));
+        let deep = root.join("A").join("B");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(root.join("One.lnk"), b"").unwrap();
+        std::fs::write(deep.join("Two.lnk"), b"").unwrap();
+        std::fs::write(deep.join("notes.txt"), b"").unwrap();
+        let mut apps = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        collect_apps(&root, 0, &mut apps, &mut seen);
+        // A second walk (the Programs folder is also in `folders`) adds nothing.
+        collect_apps(&root, 0, &mut apps, &mut seen);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(apps.len(), 2);
     }
 
     #[test]
