@@ -25,10 +25,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{Result, w};
 
 const WIDTH: f32 = 640.0;
-const HEIGHT: f32 = 640.0;
+const HEIGHT: f32 = 700.0;
 const GRID_TOP: f32 = 96.0;
-/// Bottom strip reserved for the power button, so tiles never sit under it.
-const POWER_BAR: f32 = 64.0;
+/// Windows 11 shows three rows of pinned tiles before "Recente".
+const PINNED_ROWS: usize = 3;
+const PINNED_END: f32 = GRID_TOP + PINNED_ROWS as f32 * (CELL + GAP);
+const RECENT_TOP: f32 = PINNED_END + 24.0;
+const RECENT_GRID_TOP: f32 = RECENT_TOP + 28.0;
+const RECENT_COLUMNS: usize = 3;
+const RECENT_W: f32 = 190.0;
+const RECENT_H: f32 = 60.0;
+const ALL_TOP: f32 = RECENT_GRID_TOP + 2.0 * RECENT_H + 16.0;
+const ALL_GRID_TOP: f32 = ALL_TOP + 28.0;
+/// Bottom bar with the account and the power button, as in Windows 11.
+const POWER_BAR: f32 = 56.0;
 const POWER_ACTIONS: [(&str, PowerAction); 5] = [
     ("Bloquear", PowerAction::Lock),
     ("Sair", PowerAction::Logoff),
@@ -36,12 +46,21 @@ const POWER_ACTIONS: [(&str, PowerAction); 5] = [
     ("Reiniciar", PowerAction::Restart),
     ("Desligar", PowerAction::Shutdown),
 ];
-/// Power button at the bottom-left, 40 DIPs across.
-fn power_rect(h: f32) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-    rect(16.0, h - 56.0, 56.0, h - 16.0)
+/// Power button at the bottom-right of the account bar.
+fn power_rect(w: f32, h: f32) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+    rect(w - 56.0, h - 48.0, w - 16.0, h - 8.0)
 }
-fn power_item_rect(h: f32, index: usize) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-    rect(16.0, h - 56.0 - (5 - index) as f32 * 32.0, 176.0, h - 56.0 - (4 - index) as f32 * 32.0)
+fn power_item_rect(w: f32, h: f32, index: usize) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+    rect(w - 176.0, h - 48.0 - (5 - index) as f32 * 32.0, w - 16.0,
+        h - 48.0 - (4 - index) as f32 * 32.0)
+}
+/// Cell of the recent-files grid.
+fn recent_rect(index: usize) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+    let column = index % RECENT_COLUMNS;
+    let row = index / RECENT_COLUMNS;
+    let left = 24.0 + column as f32 * RECENT_W;
+    let top = RECENT_GRID_TOP + row as f32 * RECENT_H;
+    rect(left, top, left + RECENT_W - 8.0, top + RECENT_H)
 }
 
 thread_local! {
@@ -56,6 +75,8 @@ struct App {
     grid: Grid,
     apps: Vec<AppInfo>,
     icons: Vec<Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>>,
+    recent: Vec<AppInfo>,
+    recent_icons: Vec<Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>>,
     search: TextBox,
     power_open: bool,
     /// Destructive actions need a second click on the same item.
@@ -83,7 +104,7 @@ impl App {
         self.search.draw(s, t, f, rect(24.0, 28.0, w - 24.0, 72.0), true)?;
         s.text_no_wrap("Fixados", &f.body, rect(24.0, 68.0, w - 24.0, GRID_TOP), t.text_primary);
         let cells = self.grid.arrange(24.0, GRID_TOP);
-        s.with_clip(rect(0.0, GRID_TOP, w, h - POWER_BAR), |s| {
+        s.with_clip(rect(0.0, GRID_TOP, w, PINNED_END), |s| {
             for (index, cell) in cells {
                 if let Some(icon) = self.icons.get(index).and_then(|icon| icon.as_ref()) {
                     let size = 32.0;
@@ -94,12 +115,44 @@ impl App {
                     rect(cell.left + 4.0, cell.top + 48.0, cell.right - 4.0, cell.bottom), t.text_primary);
             }
         });
-        let power = power_rect(h);
-        s.fill_round(power, 8.0, t.control_alt_fill_secondary);
+        s.text_no_wrap("Recente", &f.body,
+            rect(24.0, RECENT_TOP, w - 24.0, RECENT_TOP + 24.0), t.text_primary);
+        for (index, item) in self.recent.iter().enumerate() {
+            let r = recent_rect(index);
+            if let Some(icon) = self.recent_icons.get(index).and_then(|icon| icon.as_ref()) {
+                icons::draw(s, icon, r.left, r.top, 24.0);
+            }
+            let label: String = item.name.chars().take(22).collect();
+            s.text_no_wrap(&label, &f.caption,
+                rect(r.left + 32.0, r.top, r.right, r.top + 26.0), t.text_primary);
+            s.text_no_wrap("Adicionados recentemente", &f.caption,
+                rect(r.left + 32.0, r.top + 26.0, r.right, r.bottom), t.text_secondary);
+        }
+        s.text_no_wrap("Todos os aplicativos", &f.body,
+            rect(24.0, ALL_TOP, w - 24.0, ALL_TOP + 24.0), t.text_primary);
+        s.text_no_wrap("Exibir tudo ›", &f.caption,
+            rect(w - 140.0, ALL_TOP, w - 24.0, ALL_TOP + 24.0), t.text_secondary);
+        for (offset, index) in (PINNED_ROWS * fluent_win::grid_view::COLUMNS
+            ..self.apps.len()).take(fluent_win::grid_view::COLUMNS).enumerate()
+        {
+            let left = 24.0 + offset as f32 * (CELL + GAP);
+            let top = ALL_GRID_TOP;
+            if let Some(icon) = self.icons.get(index).and_then(|icon| icon.as_ref()) {
+                icons::draw(s, icon, left + (CELL - 32.0) / 2.0, top + 8.0, 32.0);
+            }
+            let label: String = self.apps[index].name.chars().take(12).collect();
+            s.text_no_wrap(&label, &f.caption,
+                rect(left + 4.0, top + 48.0, left + CELL - 4.0, top + CELL), t.text_primary);
+        }
+        s.fill_round(rect(0.0, h - POWER_BAR, w, h), 0.0, t.control_alt_fill_secondary);
+        s.text_no_wrap("Usuário", &f.body,
+            rect(24.0, h - POWER_BAR, w - 80.0, h), t.text_primary);
+        let power = power_rect(w, h);
+        s.fill_round(power, 8.0, t.card);
         s.text_no_wrap("⏻", &f.body, power, t.text_primary);
         if self.power_open {
             for (index, (label, action)) in POWER_ACTIONS.iter().enumerate() {
-                let r = power_item_rect(h, index);
+                let r = power_item_rect(w, h, index);
                 // Opaque token: the grid is behind the menu and must not bleed through.
                 s.fill_round(r, 4.0, if self.pending == Some(*action) { t.accent } else { t.control_solid_fill });
                 s.stroke_round(r, 4.0, 1.0, t.stroke);
@@ -116,10 +169,10 @@ impl App {
     }
 
     fn click(&mut self, x: f32, y: f32) -> Result<()> {
-        let (_, h) = self.surface.size();
+        let (w, h) = self.surface.size();
         if self.power_open {
             for (index, (_, action)) in POWER_ACTIONS.iter().enumerate() {
-                let r = power_item_rect(h, index);
+                let r = power_item_rect(w, h, index);
                 if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
                     if self.pending == Some(*action) || *action == PowerAction::Lock {
                         return session::perform(*action);
@@ -132,10 +185,22 @@ impl App {
             self.pending = None;
             return Ok(());
         }
-        let r = power_rect(h);
+        let r = power_rect(w, h);
         if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
             self.power_open = true;
             return Ok(());
+        }
+        for (index, item) in self.recent.iter().enumerate() {
+            let r = recent_rect(index);
+            if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
+                unsafe {
+                    _ = ShellExecuteW(Some(self.hwnd), w!("open"),
+                        &windows::core::HSTRING::from(item.path.to_string_lossy().as_ref()),
+                        None, None, SW_SHOW);
+                }
+                unsafe { _ = DestroyWindow(self.hwnd) };
+                return Ok(());
+            }
         }
         let Some(index) = self.grid.hit(x, y, 24.0, GRID_TOP) else { return Ok(()) };
         let Some(app) = self.apps.get(index) else { return Ok(()) };
@@ -195,17 +260,21 @@ fn main() -> Result<()> {
         let surface = Surface::new(hwnd)?;
         let formats = Formats::new(&surface)?;
         let apps = app_list::enumerate()?;
+        let recent = app_list::recent().unwrap_or_default();
         let mut cache = IconCache::new();
         let icons = apps.iter()
             .map(|app| cache.get(&surface, &app.path.to_string_lossy(), 32).ok().cloned())
             .collect();
+        let recent_icons = recent.iter()
+            .map(|item| cache.get(&surface, &item.path.to_string_lossy(), 24).ok().cloned())
+            .collect();
         let mut search = TextBox::new("");
         search.placeholder = app_list::SEARCH_PLACEHOLDER.to_owned();
         let mut grid = Grid::new(apps.len());
-        grid.set_viewport(HEIGHT - GRID_TOP - POWER_BAR - GAP);
+        grid.set_viewport(PINNED_ROWS as f32 * (CELL + GAP));
         APP.with(|cell| {
-            *cell.borrow_mut() = Some(App { hwnd, surface, theme, formats, grid, apps, icons, search,
-                power_open: false, pending: None });
+            *cell.borrow_mut() = Some(App { hwnd, surface, theme, formats, grid, apps, icons,
+                recent, recent_icons, search, power_open: false, pending: None });
         });
         with_app(App::render);
         let mut msg = MSG::default();

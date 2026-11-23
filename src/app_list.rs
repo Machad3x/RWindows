@@ -4,12 +4,13 @@
 //! installed-app list, not an exact copy of the user's pinned grid.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
 use windows::Win32::UI::Shell::{
-    FOLDERID_CommonStartMenu, FOLDERID_StartMenu, SHFILEINFOW, SHGFI_DISPLAYNAME, SHGetFileInfoW,
-    SHGetKnownFolderPath,
+    FOLDERID_CommonStartMenu, FOLDERID_Recent, FOLDERID_StartMenu, SHFILEINFOW, SHGFI_DISPLAYNAME,
+    SHGetFileInfoW, SHGetKnownFolderPath,
 };
 use windows::core::{HSTRING, Result};
 
@@ -108,11 +109,36 @@ pub fn enumerate() -> Result<Vec<AppInfo>> {
     Ok(apps)
 }
 
+/// Six recent items as in the Windows 11 Start menu. Reads `FOLDERID_Recent`
+/// (shortcuts to recently opened documents), newest first.
+pub fn recent() -> Result<Vec<AppInfo>> {
+    let root = known_folder(&FOLDERID_Recent)?;
+    let mut items = Vec::new();
+    for entry in std::fs::read_dir(root)?.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("lnk")) {
+            let modified = entry.metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            items.push((AppInfo { name: display_name(&path), path }, modified));
+        }
+    }
+    Ok(newest(items, 6))
+}
+
+/// Keeps the newest `limit` items, newest first.
+pub fn newest<T>(mut items: Vec<(T, SystemTime)>, limit: usize) -> Vec<T> {
+    items.sort_by_key(|item| std::cmp::Reverse(item.1));
+    items.into_iter().take(limit).map(|(item, _)| item).collect()
+}
+
 /// Placeholder text for the Start search box.
 pub const SEARCH_PLACEHOLDER: &str = "Pesquisar aplicativos, arquivos e configurações";
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -126,6 +152,17 @@ mod tests {
     #[test]
     fn fallback_name_should_strip_the_extension() {
         assert_eq!(name_from_path(Path::new(r"C:\Apps\Editor.lnk")), "Editor");
+    }
+
+    #[test]
+    fn newest_should_sort_by_time_and_cap_the_count() {
+        let base = SystemTime::UNIX_EPOCH;
+        let items = vec![
+            ("old", base),
+            ("newest", base + Duration::from_secs(30)),
+            ("middle", base + Duration::from_secs(10)),
+        ];
+        assert_eq!(newest(items, 2), vec!["newest", "middle"]);
     }
 
     #[test]
