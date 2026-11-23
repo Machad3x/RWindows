@@ -46,12 +46,13 @@ use windows::Win32::UI::Shell::{
     ABM_GETTASKBARPOS, ABN_POSCHANGED, APPBARDATA, SHAppBarMessage, ShellExecuteW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
     ReleaseCapture, SetCapture, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_RETURN, VK_SPACE, VK_UP,
-    VIRTUAL_KEY,
+    VIRTUAL_KEY, mouse_event,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowExW, FindWindowW,
-    GetMessageW,
+    GetMessageW, SetCursorPos,
     GetWindowRect, GetWindowThreadProcessId, HSHELL_HIGHBIT, HSHELL_MONITORCHANGED, HSHELL_REDRAW,
     HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW, IsIconic,
     IsWindow, KillTimer, LoadCursorW, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
@@ -382,6 +383,41 @@ fn open_start() {
     }
 }
 
+/// Opens the notification-center example from the same folder.
+fn open_notifications() {
+    let Some(path) = std::env::current_exe().ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("notifications.exe")))
+    else { return };
+    unsafe {
+        _ = ShellExecuteW(None, w!("open"),
+            &windows::core::HSTRING::from(path.to_string_lossy().as_ref()),
+            None, None, SW_SHOWNORMAL);
+    }
+}
+
+/// Clicks the real Explorer tray under our mirrored strip. The bar sits just
+/// above the taskbar, so the x coordinate maps one to one.
+fn forward_tray_click(x: i32, right: bool) -> Result<()> {
+    let Some((taskbar, _)) = tray_windows() else { return Ok(()) };
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(taskbar, &mut rect)?; }
+    let y = (rect.top + rect.bottom) / 2;
+    unsafe {
+        // The original press captured the mouse to our window; release it so
+        // the synthetic click reaches Explorer's tray instead.
+        _ = ReleaseCapture();
+        SetCursorPos(x, y)?;
+        let (down, up) = if right {
+            (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP)
+        } else {
+            (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
+        };
+        mouse_event(down, 0, 0, 0, 0);
+        mouse_event(up, 0, 0, 0, 0);
+    }
+    Ok(())
+}
+
 /// Start of the clock area, measured from the real strings so locale and DPI
 /// changes never need a reserved pixel count.
 fn clock_left(app: &App, w: f32, h: f32) -> f32 {
@@ -569,6 +605,27 @@ fn refresh_tray(&mut self) {
         self.render()
     }
 
+    /// True when the pointer is over the mirrored tray/clock area.
+    fn in_right_area(&self, x_px: i32) -> bool {
+        let (w, h) = self.surface.size();
+        self.tray_strip.is_some()
+            && x_px as f32 / self.surface.scale() >= tray_left(self, w, h)
+    }
+
+    /// Left click: Start/task buttons on the left, tray or clock on the right.
+    fn click_left(&mut self, x_px: i32) -> Result<()> {
+        if self.in_right_area(x_px) {
+            let (w, h) = self.surface.size();
+            if x_px as f32 / self.surface.scale() >= clock_left(self, w, h) {
+                open_notifications();
+            } else {
+                forward_tray_click(x_px, false)?;
+            }
+            return Ok(());
+        }
+        self.activate_button(x_px as f32 / self.surface.scale())
+    }
+
     /// Activates the Start slot, or a task button; minimizes the active window.
     fn activate_button(&mut self, x: f32) -> Result<()> {
         if start_at(self, x) {
@@ -674,13 +731,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             with_app_at(hwnd, App::render)
         }
         APPBAR_CALLBACK if wp.0 as u32 == ABN_POSCHANGED => with_app_at(hwnd, App::reposition),
-        WM_LBUTTONDOWN => with_app_at(hwnd, |app| {
-            let k = app.surface.scale();
-            app.activate_button((lp.0 & 0xffff) as f32 / k)
-        }),
+        WM_LBUTTONDOWN => with_app_at(hwnd, |app| app.click_left((lp.0 & 0xffff) as i32)),
         WM_RBUTTONDOWN => {
             let px = (lp.0 & 0xffff) as i32;
             let py = ((lp.0 >> 16) & 0xffff) as i32;
+            let right_area = APP.with(|cell| {
+                cell.borrow().iter().find(|app| app.hwnd == hwnd)
+                    .is_some_and(|app| app.in_right_area(px))
+            });
+            if right_area {
+                _ = forward_tray_click(px, true);
+                return LRESULT(0);
+            }
             let target = APP.with(|cell| {
                 cell.borrow().iter().find(|app| app.hwnd == hwnd).and_then(|app| {
                     let k = app.surface.scale();

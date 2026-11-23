@@ -19,7 +19,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IDC_ARROW,
     LoadCursorW, MSG, PostQuitMessage, RegisterClassW, TranslateMessage, WA_INACTIVE, WM_ACTIVATE,
-    WM_DESTROY, WM_PAINT, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP, WS_VISIBLE,
+    WM_DESTROY, WM_LBUTTONDOWN, WM_PAINT, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{Result, w};
 
@@ -35,15 +35,19 @@ const MONTH_H: f32 = 26.0;
 const WEEK_H: f32 = 24.0;
 
 /// Calendar block height derived from its rows, not a fixed screenshot value.
-fn calendar_height() -> f32 {
-    CAL_HEADER + MONTH_H + WEEK_H + 6.0 * CELL + 8.0
+fn calendar_height(expanded: bool) -> f32 {
+    if expanded {
+        CAL_HEADER + MONTH_H + WEEK_H + 6.0 * CELL + 8.0
+    } else {
+        CAL_HEADER
+    }
 }
 
 /// Layout for a panel of height `h`: everything below the notification list
 /// is anchored to the bottom edge, so the panel follows the work area.
-fn layout(h: f32) -> (f32, f32, f32, f32, f32) {
+fn layout(h: f32, expanded: bool) -> (f32, f32, f32, f32, f32) {
     let focus_top = h - PAD - FOCUS_H;
-    let cal_top = focus_top - calendar_height() - 8.0;
+    let cal_top = focus_top - calendar_height(expanded) - 8.0;
     let month_top = cal_top + CAL_HEADER + 4.0;
     let week_top = month_top + MONTH_H + 4.0;
     let grid_top = week_top + WEEK_H + 4.0;
@@ -58,6 +62,8 @@ struct App {
     centered: windows::Win32::Graphics::DirectWrite::IDWriteTextFormat,
     today: Date,
     cells: Vec<(u32, bool)>,
+    /// Calendar starts collapsed, like the real notification center.
+    expanded: bool,
 }
 
 impl App {
@@ -68,7 +74,8 @@ impl App {
         let r = |l: f32, t: f32, right: f32, bottom: f32| {
             rect(l + SHADOW, t + SHADOW, right + SHADOW, bottom + SHADOW)
         };
-        let (cal_top, month_top, week_top, grid_top, focus_top) = layout(h);
+        let expanded = self.expanded;
+        let (cal_top, month_top, week_top, grid_top, focus_top) = layout(h, expanded);
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
         let symbol = s.icon_format(14.0)?;
         s.begin();
@@ -104,9 +111,10 @@ impl App {
         let long_date = calendar::long_date(self.today);
         s.text_no_wrap(&long_date, &f.caption,
             r(PAD, cal_top + 8.0, w - PAD - 30.0, cal_top + CAL_HEADER), t.text_primary);
-        s.text_no_wrap("\u{E70D}", &symbol,
+        s.text_no_wrap(if expanded { "\u{E70E}" } else { "\u{E70D}" }, &symbol,
             r(w - 32.0, cal_top + 8.0, w - PAD, cal_top + CAL_HEADER), t.text_secondary);
 
+        if expanded {
         let month_title = calendar::month_year(self.today);
         s.text_no_wrap(&month_title, &f.caption,
             r(PAD, month_top, w - PAD, month_top + MONTH_H), t.text_primary);
@@ -141,6 +149,7 @@ impl App {
                 r(left, top, left + cell_w, top + CELL),
                 if *in_month { t.text_primary } else { t.text_secondary });
         }
+        }
 
         let pill_h = FOCUS_H;
         s.fill_round(r(PAD, focus_top, PAD + 24.0, focus_top + pill_h), 6.0, t.control_alt_fill_secondary);
@@ -169,6 +178,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     && let Err(e) = app.render()
                 {
                     eprintln!("fluent-win notifications: {e}");
+                }
+            });
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            APP.with(|cell| {
+                if let Ok(mut guard) = cell.try_borrow_mut()
+                    && let Some(app) = guard.as_mut()
+                {
+                    let (_, window_h) = app.surface.size();
+                    let h = window_h - 2.0 * SHADOW;
+                    let (cal_top, _, _, _, _) = layout(h, app.expanded);
+                    let x = (lp.0 & 0xffff) as f32 / app.surface.scale() - SHADOW;
+                    let y = ((lp.0 >> 16) & 0xffff) as f32 / app.surface.scale() - SHADOW;
+                    if (cal_top..=cal_top + CAL_HEADER).contains(&y)
+                        && (PAD..=W - PAD).contains(&x)
+                    {
+                        app.expanded = !app.expanded;
+                        _ = app.render();
+                    }
                 }
             });
             LRESULT(0)
@@ -228,7 +257,7 @@ fn main() -> Result<()> {
         let today = calendar::today();
         let cells = calendar::grid_full(today.year, today.month);
         APP.with(|cell| *cell.borrow_mut() = Some(App {
-            surface, theme, formats, centered, today, cells,
+            surface, theme, formats, centered, today, cells, expanded: false,
         }));
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
