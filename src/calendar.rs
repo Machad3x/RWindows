@@ -69,13 +69,9 @@ pub fn days_in_month(year: i32, month: u32) -> u32 {
 
 /// Six-week calendar grid for a month. `None` is a day outside the month.
 pub fn grid(year: i32, month: u32) -> Vec<Option<u32>> {
-    let lead = weekday(Date { year, month, day: 1 }) as usize;
-    let days = days_in_month(year, month) as usize;
-    let mut cells = Vec::with_capacity(42);
-    cells.extend(std::iter::repeat_n::<Option<u32>>(None, lead));
-    cells.extend((1..=days as u32).map(Some));
-    cells.resize(42, None);
-    cells
+    grid_full(year, month).into_iter()
+        .map(|(day, in_month)| in_month.then_some(day))
+        .collect()
 }
 
 /// Full month name in the user's locale (1..=12).
