@@ -1,10 +1,12 @@
-//! Fase 3: Quick Settings flyout with real volume and brightness backends.
+//! Fase 3: Quick Settings flyout measured against the real Windows 11 panel.
+//! On this desktop there is no brightness-capable panel, so Windows hides that
+//! row; we do the same. All metrics come from a full-resolution capture.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::cell::RefCell;
 
 use fluent_win::backdrop;
-use fluent_win::button::{Input, Key};
+use fluent_win::button::Input;
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::panel::Formats;
 use fluent_win::quick_settings::{self, Volume};
@@ -21,23 +23,45 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IDC_ARROW,
-    LoadCursorW, MSG, PostQuitMessage, RegisterClassW, TranslateMessage, WA_INACTIVE, WM_ACTIVATE,
+    KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage,
+    WA_INACTIVE, WM_ACTIVATE, WM_TIMER,
     WM_CAPTURECHANGED, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
     WM_PAINT, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{Result, w};
 
-const W: f32 = 360.0;
-const H: f32 = 388.0;
-const PAD: f32 = 16.0;
+const WIDTH: f32 = 358.0;
+const HEIGHT: f32 = 330.0;
+const TILE_W: f32 = 94.0;
+const TILE_H: f32 = 58.0;
+const TILE_PITCH: f32 = 102.0;
+const TILE_X: f32 = 24.0;
+const ROW1_Y: f32 = 28.0;
+const ROW2_Y: f32 = 122.0;
+const DIVIDER_Y: f32 = 214.0;
+/// Timer id for the marquee labels.
+const SCROLL_TIMER: usize = 1;
+/// Frames to travel, frames to pause at the end, then repeat.
+const SCROLL_FRAMES: u32 = 160;
+const SCROLL_PAUSE: u32 = 45;
+const SCROLL_STEP: f32 = 0.25;
+
+// Glyphs from the official Segoe Fluent Icons 1.56 table (Microsoft Learn).
+const TILES: [(&str, &str); 6] = [
+    ("\u{E701}", "Disponível"),    // Wifi
+    ("\u{E702}", "Não conectado"), // Bluetooth
+    ("\u{E709}", "Modo avião"),    // Airplane
+    ("\u{E776}", "Acessibilidade"), // EaseOfAccess
+    ("\u{F432}", "Economia de energia"), // BatterySaver
+    ("\u{E7F0}", "Legendas ao vivo"), // CC
+];
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
 }
 
+#[derive(Clone, Copy)]
 struct Tile {
-    label: &'static str,
-    rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F,
     on: bool,
 }
 
@@ -46,16 +70,13 @@ struct App {
     theme: Theme,
     formats: Formats,
     volume: Option<Volume>,
-    brightness: Option<u8>,
     radios: Option<Radios>,
     radio_infos: Vec<RadioInfo>,
     volume_slider: Slider,
-    brightness_slider: Slider,
-    tiles: [Tile; 3],
-    /// Which control holds capture, so WM_MOUSEMOVE/UP reaches the right one.
-    captured: u8,
-    /// Last slider used; receives arrow/Home/End keys.
-    focus: u8,
+    tiles: [Tile; 6],
+    captured: bool,
+    focus: bool,
+    scroll: u32,
 }
 
 fn with_app(f: impl FnOnce(&mut App) -> Result<()>) -> LRESULT {
@@ -74,29 +95,86 @@ impl App {
     fn render(&mut self) -> Result<()> {
         let (w, h) = self.surface.size();
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
+        let symbol = s.icon_format(18.0)?;
         s.begin();
-        s.fill_round(rect(0.0, 0.0, w, h), 8.0, t.card);
-        s.text_no_wrap("Configurações rápidas", &f.body,
-            rect(PAD, 14.0, w - PAD, 46.0), t.text_primary);
-        for tile in &self.tiles {
-            let r = tile.rect;
-            s.fill_round(r, 8.0, if tile.on { t.accent } else { t.control_alt_fill_secondary });
-            s.text_no_wrap(tile.label, &f.body,
-                rect(r.left, r.top + 18.0, r.right, r.bottom - 6.0),
-                if tile.on { t.text_on_accent } else { t.text_primary });
+        // Real flyout renders as dark gray (33..44 on this desktop); the WinUI
+        // control-fill token composites much lighter over our host window.
+        let base = if t.dark {
+            windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                r: 38.0 / 255.0, g: 38.0 / 255.0, b: 38.0 / 255.0, a: 1.0,
+            }
+        } else {
+            windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                r: 243.0 / 255.0, g: 243.0 / 255.0, b: 243.0 / 255.0, a: 1.0,
+            }
+        };
+        s.fill_round(rect(0.0, 0.0, w, h), 8.0, base);
+        for index in 0..6 {
+            let col = index % 3;
+            let row = index / 3;
+            let left = TILE_X + col as f32 * TILE_PITCH;
+            let top = if row == 0 { ROW1_Y } else { ROW2_Y };
+            let r = rect(left, top, left + TILE_W, top + TILE_H);
+            s.fill_round(r, 6.0, if self.tiles[index].on { t.accent } else { t.control_alt_fill_secondary });
+            // Windows keeps the glyph on the left of an accent tile but
+            // centres it on an inactive one.
+            let glyph_left = if self.tiles[index].on { left + 12.0 } else { left + 30.0 };
+            s.text_no_wrap(TILES[index].0, &symbol,
+                rect(glyph_left, top + 4.0, glyph_left + 28.0, top + 36.0),
+                if self.tiles[index].on { t.text_on_accent } else { t.text_primary });
+            let small = s.icon_format(12.0)?;
+            s.text_no_wrap("\u{E76C}", &small,
+                rect(left + TILE_W - 26.0, top + 12.0, left + TILE_W - 8.0, top + 40.0),
+                if self.tiles[index].on { t.text_on_accent } else { t.text_secondary });
+            let label = TILES[index].1;
+            let label_rect = rect(left - 4.0, top + TILE_H + 2.0,
+                left + TILE_W - 4.0, top + TILE_H + 18.0);
+            let available = label_rect.right - label_rect.left;
+            let (text_w, _) = s.measure(label, &f.caption)?;
+            let chars: Vec<char> = label.chars().collect();
+            if text_w <= available || chars.is_empty() {
+                s.text_no_wrap(label, &f.caption, label_rect, t.text_primary);
+            } else {
+                // Reveal the rest of a long label sideways, one character at a
+                // time, then pause and start over. Drawing a substring avoids
+                // bleeding into the neighbouring tile's label.
+                let per_char = text_w / chars.len() as f32;
+                let max_offset = text_w - available;
+                let phase = self.scroll % (SCROLL_FRAMES + SCROLL_PAUSE);
+                let offset = if phase < SCROLL_FRAMES {
+                    (phase as f32 * SCROLL_STEP).min(max_offset)
+                } else {
+                    max_offset
+                };
+                let skip = (offset / per_char) as usize;
+                let take = ((available + 1.0) / per_char) as usize;
+                let shown: String = chars.iter().skip(skip).take(take).collect();
+                s.text_no_wrap(&shown, &f.caption, label_rect, t.text_primary);
+            }
         }
-        let (bl, vl) = (&self.brightness_slider, &self.volume_slider);
-        let label = if self.brightness.is_some() { "Brilho" } else { "Brilho (indisponível)" };
-        s.text_no_wrap(label, &f.caption, rect(PAD, 128.0, w - PAD, 152.0), t.text_secondary);
-        s.text_no_wrap("Volume", &f.caption, rect(PAD, 214.0, w - PAD, 238.0), t.text_secondary);
-        bl.draw(s, t)?;
-        vl.draw(s, t)?;
+        s.fill_round(rect(0.0, DIVIDER_Y, w, DIVIDER_Y + 1.0), 0.0, t.divider);
+        s.text_no_wrap("\u{E767}", &symbol, rect(24.0, 232.0, 56.0, 264.0), t.text_primary);
+        self.volume_slider.draw(s, t)?;
+        s.text_no_wrap("\u{E713}", &symbol, rect(320.0, 232.0, 348.0, 264.0), t.text_secondary);
+        s.text_no_wrap("\u{E713}", &symbol, rect(w - 44.0, h - 36.0, w - 16.0, h - 8.0), t.text_secondary);
         s.end()
     }
 
-    fn point(&self, lp: LPARAM) -> (f32, f32) {
-        let k = self.surface.scale();
-        ((lp.0 & 0xffff) as f32 / k, ((lp.0 >> 16) & 0xffff) as f32 / k)
+    fn sync_tiles(&mut self) {
+        for (index, tile) in self.tiles.iter_mut().enumerate() {
+            tile.on = match index {
+                0 => self.radio_infos.iter().any(|info| {
+                    info.kind == RadioKind::WiFi
+                        && info.state == windows::Devices::Radios::RadioState::On
+                }),
+                1 => self.radio_infos.iter().any(|info| {
+                    info.kind == RadioKind::Bluetooth
+                        && info.state == windows::Devices::Radios::RadioState::On
+                }),
+                2 => radios::is_airplane(&self.radio_infos),
+                _ => false,
+            };
+        }
     }
 
     fn toggle_tile(&mut self, index: usize) {
@@ -125,114 +203,81 @@ impl App {
                     self.radio_infos = infos;
                 }
             }
-            _ => {}
+            _ => return,
         }
         self.sync_tiles();
     }
 
-    /// Mirrors radio state into the three tiles.
-    fn sync_tiles(&mut self) {
-        for (index, tile) in self.tiles.iter_mut().enumerate() {
-            tile.on = match index {
-                0 => self.radio_infos.iter().any(|info| {
-                    info.kind == RadioKind::WiFi
-                        && info.state == windows::Devices::Radios::RadioState::On
-                }),
-                1 => self.radio_infos.iter().any(|info| {
-                    info.kind == RadioKind::Bluetooth
-                        && info.state == windows::Devices::Radios::RadioState::On
-                }),
-                2 => radios::is_airplane(&self.radio_infos),
-                _ => false,
-            };
-        }
-    }
-
-    /// Pushes changed slider values to the system. A click without a drag must
-    /// apply too, so every input path calls this.
-    fn apply_values(&mut self, before_v: f64, before_b: f64) {
-        if self.volume_slider.value() != before_v {
-            let value = self.volume_slider.value() as u32;
-            if let Some(volume) = &self.volume {
-                _ = volume.set_level(quick_settings::level(value));
-            }
-        }
-        if self.brightness_slider.value() != before_b {
-            let value = self.brightness_slider.value() as u8;
-            if quick_settings::set_brightness(value) {
-                self.brightness = Some(value);
-            }
-        }
+    fn point(&self, lp: LPARAM) -> (f32, f32) {
+        let k = self.surface.scale();
+        ((lp.0 & 0xffff) as f32 / k, ((lp.0 >> 16) & 0xffff) as f32 / k)
     }
 
     fn down(&mut self, x: f32, y: f32) -> bool {
-        for (index, tile) in self.tiles.iter_mut().enumerate() {
-            let r = tile.rect;
-            if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
+        for index in 0..6 {
+            let col = index % 3;
+            let row = index / 3;
+            let left = TILE_X + col as f32 * TILE_PITCH;
+            let top = if row == 0 { ROW1_Y } else { ROW2_Y };
+            if x >= left && x < left + TILE_W && y >= top && y < top + TILE_H {
                 self.toggle_tile(index);
-                return true;
+                return false;
             }
         }
-        let (before_v, before_b) = (self.volume_slider.value(), self.brightness_slider.value());
         let r = self.volume_slider.rect;
-        if y >= r.top && y < r.bottom && x >= r.left && x < r.right {
-            self.captured = 1;
-            self.focus = 1;
+        if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
+            self.captured = true;
+            self.focus = true;
+            let before = self.volume_slider.value();
             let out = self.volume_slider.handle(Input::PointerDown(x, y));
-            self.apply_values(before_v, before_b);
-            return out.capture == Some(true);
-        }
-        let r = self.brightness_slider.rect;
-        if y >= r.top && y < r.bottom && x >= r.left && x < r.right {
-            self.captured = 2;
-            self.focus = 2;
-            let out = self.brightness_slider.handle(Input::PointerDown(x, y));
-            self.apply_values(before_v, before_b);
+            self.apply_volume(before);
             return out.capture == Some(true);
         }
         false
     }
 
-    /// Returns whether a slider value changed, so the caller can skip a full
-    /// Direct2D repaint on mouse moves that touch no control.
-    fn move_to(&mut self, x: f32, y: f32) -> bool {
-        let (before_v, before_b) = (self.volume_slider.value(), self.brightness_slider.value());
-        match self.captured {
-            1 => { _ = self.volume_slider.handle(Input::PointerMove(x, y)); }
-            2 => { _ = self.brightness_slider.handle(Input::PointerMove(x, y)); }
-            _ => return false,
+    fn apply_volume(&mut self, before: f64) {
+        if self.volume_slider.value() != before
+            && let Some(volume) = &self.volume
+        {
+            _ = volume.set_level(quick_settings::level(self.volume_slider.value() as u32));
         }
-        self.apply_values(before_v, before_b);
-        self.volume_slider.value() != before_v || self.brightness_slider.value() != before_b
+    }
+
+    fn move_to(&mut self, x: f32, y: f32) -> bool {
+        if !self.captured {
+            return false;
+        }
+        let before = self.volume_slider.value();
+        _ = self.volume_slider.handle(Input::PointerMove(x, y));
+        self.apply_volume(before);
+        self.volume_slider.value() != before
     }
 
     fn up(&mut self, x: f32, y: f32) {
-        let (before_v, before_b) = (self.volume_slider.value(), self.brightness_slider.value());
-        match self.captured {
-            1 => { _ = self.volume_slider.handle(Input::PointerUp(x, y)); }
-            2 => { _ = self.brightness_slider.handle(Input::PointerUp(x, y)); }
-            _ => {}
+        if self.captured {
+            let before = self.volume_slider.value();
+            _ = self.volume_slider.handle(Input::PointerUp(x, y));
+            self.apply_volume(before);
+            self.captured = false;
         }
-        self.apply_values(before_v, before_b);
-        self.captured = 0;
     }
 
     fn key(&mut self, vk: VIRTUAL_KEY, down: bool) {
         let key = match vk {
-            VK_LEFT | VK_DOWN => Key::Left,
-            VK_RIGHT | VK_UP => Key::Right,
-            VK_HOME => Key::Home,
-            VK_END => Key::End,
+            VK_LEFT | VK_DOWN => fluent_win::button::Key::Left,
+            VK_RIGHT | VK_UP => fluent_win::button::Key::Right,
+            VK_HOME => fluent_win::button::Key::Home,
+            VK_END => fluent_win::button::Key::End,
             _ => return,
         };
-        let (before_v, before_b) = (self.volume_slider.value(), self.brightness_slider.value());
-        let input = if down { Input::KeyDown(key) } else { Input::KeyUp(key) };
-        match self.focus {
-            1 => { _ = self.volume_slider.handle(input); }
-            2 => { _ = self.brightness_slider.handle(input); }
-            _ => return,
+        if !self.focus {
+            return;
         }
-        self.apply_values(before_v, before_b);
+        let before = self.volume_slider.value();
+        let input = if down { Input::KeyDown(key) } else { Input::KeyUp(key) };
+        _ = self.volume_slider.handle(input);
+        self.apply_volume(before);
     }
 }
 
@@ -263,8 +308,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             app.render()
         }),
         WM_CAPTURECHANGED => with_app(|app| {
-            app.captured = 0;
+            app.captured = false;
             Ok(())
+        }),
+        WM_TIMER if wp.0 == SCROLL_TIMER => with_app(|app| {
+            app.scroll = app.scroll.wrapping_add(1);
+            app.render()
         }),
         WM_KEYDOWN | WM_KEYUP => with_app(|app| {
             app.key(VIRTUAL_KEY(wp.0 as u16), msg == WM_KEYDOWN);
@@ -275,6 +324,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             LRESULT(0)
         },
         WM_DESTROY => unsafe {
+            _ = KillTimer(Some(hwnd), SCROLL_TIMER);
             PostQuitMessage(0);
             LRESULT(0)
         },
@@ -294,46 +344,26 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(wndproc),
             ..Default::default()
         });
+        // Real flyout sits at the bottom-right of the primary monitor.
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class,
             w!("fluent-win · Configurações rápidas"), WS_POPUP | WS_VISIBLE,
-            1500, 500, W as i32, H as i32, None, None, Some(instance.into()), None)?;
+            2211, 826, WIDTH as i32, HEIGHT as i32, None, None, Some(instance.into()), None)?;
         let theme = Theme::system();
         _ = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark);
         let surface = Surface::new(hwnd)?;
         let formats = Formats::new(&surface)?;
-
         let volume = Volume::new().ok();
         let level = volume.as_ref().and_then(|v| v.level().ok()).unwrap_or(0.5);
-        let brightness = quick_settings::brightness();
         let radios = Radios::load().ok();
         let radio_infos = radios.as_ref().and_then(|r| r.info().ok()).unwrap_or_default();
-        eprintln!("volume={} brightness={:?} radios={:?}",
-            quick_settings::percent(level), brightness,
-            radio_infos.iter().map(|i| (&i.name, i.state)).collect::<Vec<_>>());
-
-        let volume_slider = Slider::new("Volume", rect(PAD + 6.0, 238.0, W - PAD - 6.0, 270.0),
+        let volume_slider = Slider::new("Volume", rect(62.0, 232.0, 306.0, 264.0),
             0.0, 100.0, quick_settings::percent(level) as f64);
-        let mut brightness_slider = Slider::new("Brilho", rect(PAD + 6.0, 152.0, W - PAD - 6.0, 184.0),
-            0.0, 100.0, brightness.unwrap_or(80) as f64);
-        if brightness.is_none() {
-            brightness_slider.set_enabled(false);
-        }
-        let tile_w = (W - 2.0 * PAD - 16.0) / 3.0;
-        let tiles = ["Wi-Fi", "Bluetooth", "Modo avião"].map(|label| Tile {
-            label,
-            rect: rect(PAD, 56.0, PAD + tile_w, 120.0),
-            on: false,
-        });
-        let mut tiles = tiles;
-        for (i, tile) in tiles.iter_mut().enumerate() {
-            tile.rect.left = PAD + i as f32 * (tile_w + 8.0);
-            tile.rect.right = tile.rect.left + tile_w;
-        }
         let mut app = App {
-            surface, theme, formats, volume, brightness, radios, radio_infos,
-            volume_slider, brightness_slider, tiles, captured: 0, focus: 0,
+            surface, theme, formats, volume, radios, radio_infos, volume_slider,
+            tiles: [Tile { on: false }; 6], captured: false, focus: false, scroll: 0,
         };
         app.sync_tiles();
+        _ = SetTimer(Some(hwnd), SCROLL_TIMER, 40, None);
         APP.with(|cell| *cell.borrow_mut() = Some(app));
         with_app(App::render);
         let mut msg = MSG::default();

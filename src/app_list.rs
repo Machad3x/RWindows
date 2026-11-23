@@ -110,6 +110,51 @@ pub fn enumerate() -> Result<Vec<AppInfo>> {
     Ok(apps)
 }
 
+/// A group in the "Todos" view, built from a real Start Menu subfolder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Category {
+    /// Folder name shown under the tile.
+    pub name: String,
+    /// Up to four apps inside the tile.
+    pub apps: Vec<AppInfo>,
+}
+
+/// Categories from the `Programs` subfolders, each with up to four apps.
+/// System-only folders are skipped, as Windows 11 does in its All apps view.
+pub fn categories() -> Result<Vec<Category>> {
+    const SKIP: [&str; 4] = ["Startup", "Administrative Tools", "System Tools", "Accessibility"];
+    let mut result: Vec<Category> = Vec::new();
+    for folder in folders()? {
+        let programs = folder.join("Programs");
+        let Ok(entries) = std::fs::read_dir(&programs) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() || SKIP.iter().any(|name| path.file_name().is_some_and(|n| n == *name)) {
+                continue;
+            }
+            let name = display_name(&path);
+            let mut apps = Vec::new();
+            if let Ok(children) = std::fs::read_dir(&path) {
+                for child in children.flatten() {
+                    let child = child.path();
+                    if is_app_file(&child)
+                        && !apps.iter().any(|app: &AppInfo| app.path == child)
+                    {
+                        apps.push(AppInfo { name: display_name(&child), path: child });
+                    }
+                }
+            }
+            apps.sort_by_key(|app| app.name.to_lowercase());
+            apps.truncate(4);
+            if !apps.is_empty() && !result.iter().any(|category| category.name == name) {
+                result.push(Category { name, apps });
+            }
+        }
+    }
+    result.sort_by_key(|category| category.name.to_lowercase());
+    Ok(result)
+}
+
 /// Six recent items as in the Windows 11 Start menu. Reads `FOLDERID_Recent`
 /// (shortcuts to recently opened documents), newest first.
 pub fn recent() -> Result<Vec<AppInfo>> {
@@ -134,7 +179,7 @@ pub fn newest<T>(mut items: Vec<(T, SystemTime)>, limit: usize) -> Vec<T> {
 }
 
 /// Placeholder text for the Start search box.
-pub const SEARCH_PLACEHOLDER: &str = "Pesquisar aplicativos, arquivos e configurações";
+pub const SEARCH_PLACEHOLDER: &str = "Pesquisar aplicativos, configurações e documentos";
 
 #[cfg(test)]
 mod tests {
@@ -168,6 +213,6 @@ mod tests {
 
     #[test]
     fn search_placeholder_should_match_the_win11_label() {
-        assert_eq!(SEARCH_PLACEHOLDER, "Pesquisar aplicativos, arquivos e configurações");
+        assert_eq!(SEARCH_PLACEHOLDER, "Pesquisar aplicativos, configurações e documentos");
     }
 }

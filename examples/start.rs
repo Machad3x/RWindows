@@ -1,13 +1,13 @@
-//! Fase 3: Start menu with a virtualized pinned grid, app icons and search.
+//! Fase 3: Start menu measured against the real Windows 11 panel on this
+//! machine (834x835 px at 100% DPI). All positions below come from a pixel
+//! analysis of a full-resolution capture, not from estimates.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::cell::RefCell;
 
-use fluent_win::app_list::{self, AppInfo};
+use fluent_win::app_list::{self, AppInfo, Category};
 use fluent_win::backdrop;
 use fluent_win::gfx::{Surface, rect};
-use fluent_win::grid_view::{Grid, CELL, GAP};
-use fluent_win::icons::{self, IconCache};
 use fluent_win::panel::Formats;
 use fluent_win::session::{self, PowerAction};
 use fluent_win::text_box::TextBox;
@@ -18,27 +18,35 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IDC_ARROW,
-    LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SW_SHOW, TranslateMessage,
-    WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_DESTROY, WM_LBUTTONDOWN, WM_PAINT, WNDCLASSW,
+    LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SW_SHOW, TranslateMessage, WA_INACTIVE,
+    WM_ACTIVATE, WM_CHAR, WM_DESTROY, WM_LBUTTONDOWN, WM_PAINT, WNDCLASSW,
     WS_EX_NOREDIRECTIONBITMAP, WS_POPUP, WS_VISIBLE,
 };
 use windows::core::{Result, w};
 
-const WIDTH: f32 = 640.0;
-const HEIGHT: f32 = 700.0;
-const GRID_TOP: f32 = 96.0;
-/// Windows 11 shows three rows of pinned tiles before "Recente".
-const PINNED_ROWS: usize = 3;
-const PINNED_END: f32 = GRID_TOP + PINNED_ROWS as f32 * (CELL + GAP);
-const RECENT_TOP: f32 = PINNED_END + 24.0;
-const RECENT_GRID_TOP: f32 = RECENT_TOP + 28.0;
-const RECENT_COLUMNS: usize = 3;
-const RECENT_W: f32 = 190.0;
-const RECENT_H: f32 = 60.0;
-const ALL_TOP: f32 = RECENT_GRID_TOP + 2.0 * RECENT_H + 16.0;
-const ALL_GRID_TOP: f32 = ALL_TOP + 28.0;
-/// Bottom bar with the account and the power button, as in Windows 11.
-const POWER_BAR: f32 = 56.0;
+const WIDTH: f32 = 834.0;
+const HEIGHT: f32 = 835.0;
+
+// Measured positions in the real panel.
+const PAD: f32 = 65.0;
+const SEARCH: (f32, f32, f32, f32) = (32.0, 5.0, 802.0, 37.0);
+const FIXED_LABEL_Y: f32 = 84.0;
+const PIN_Y: f32 = 122.0;
+const PIN_PITCH: f32 = 92.0;
+const PIN_ICON: f32 = 40.0;
+const RECENT_LABEL_Y: f32 = 240.0;
+const RECENT_TOP: f32 = 282.0;
+const RECENT_PITCH_X: f32 = 250.0;
+const RECENT_PITCH_Y: f32 = 56.0;
+const RECENT_ICON: f32 = 28.0;
+const ALL_LABEL_Y: f32 = 425.0;
+const CAT_TOP: f32 = 480.0;
+const CAT_PITCH_X: f32 = 183.0;
+const CAT_PITCH_Y: f32 = 208.0;
+const CAT_W: f32 = 155.0;
+const CAT_H: f32 = 108.0;
+const BAR_TOP: f32 = 795.0;
+
 const POWER_ACTIONS: [(&str, PowerAction); 5] = [
     ("Bloquear", PowerAction::Lock),
     ("Sair", PowerAction::Logoff),
@@ -46,21 +54,24 @@ const POWER_ACTIONS: [(&str, PowerAction); 5] = [
     ("Reiniciar", PowerAction::Restart),
     ("Desligar", PowerAction::Shutdown),
 ];
-/// Power button at the bottom-right of the account bar.
-fn power_rect(w: f32, h: f32) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-    rect(w - 56.0, h - 48.0, w - 16.0, h - 8.0)
+
+type Bitmap = windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
+
+fn power_rect() -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+    rect(WIDTH - 92.0, BAR_TOP + 4.0, WIDTH - 60.0, BAR_TOP + 36.0)
 }
-fn power_item_rect(w: f32, h: f32, index: usize) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-    rect(w - 176.0, h - 48.0 - (5 - index) as f32 * 32.0, w - 16.0,
-        h - 48.0 - (4 - index) as f32 * 32.0)
+fn power_item_rect(index: usize) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+    rect(WIDTH - 200.0, BAR_TOP - (5 - index) as f32 * 32.0, WIDTH - 52.0,
+        BAR_TOP - (4 - index) as f32 * 32.0)
 }
-/// Cell of the recent-files grid.
+fn pin_rect(index: usize) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+    let left = PAD + index as f32 * PIN_PITCH - 12.0;
+    rect(left, PIN_Y, left + PIN_PITCH - 8.0, PIN_Y + 78.0)
+}
 fn recent_rect(index: usize) -> windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-    let column = index % RECENT_COLUMNS;
-    let row = index / RECENT_COLUMNS;
-    let left = 24.0 + column as f32 * RECENT_W;
-    let top = RECENT_GRID_TOP + row as f32 * RECENT_H;
-    rect(left, top, left + RECENT_W - 8.0, top + RECENT_H)
+    let left = PAD + (index % 3) as f32 * RECENT_PITCH_X;
+    let top = RECENT_TOP + (index / 3) as f32 * RECENT_PITCH_Y;
+    rect(left - 4.0, top, left + RECENT_PITCH_X - 12.0, top + RECENT_PITCH_Y)
 }
 
 thread_local! {
@@ -72,14 +83,15 @@ struct App {
     surface: Surface,
     theme: Theme,
     formats: Formats,
-    grid: Grid,
-    apps: Vec<AppInfo>,
-    icons: Vec<Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>>,
-    recent: Vec<AppInfo>,
-    recent_icons: Vec<Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>>,
     search: TextBox,
+    pinned: Vec<AppInfo>,
+    pinned_icons: Vec<Option<Bitmap>>,
+    recent: Vec<AppInfo>,
+    recent_icons: Vec<Option<Bitmap>>,
+    categories: Vec<Category>,
+    category_icons: Vec<Vec<Option<Bitmap>>>,
+    user: String,
     power_open: bool,
-    /// Destructive actions need a second click on the same item.
     pending: Option<PowerAction>,
 }
 
@@ -95,66 +107,112 @@ fn with_app(f: impl FnOnce(&mut App) -> Result<()>) -> LRESULT {
     LRESULT(0)
 }
 
+/// Splits a label into at most two lines, breaking near the middle.
+fn label_lines(name: &str) -> Vec<String> {
+    if name.len() <= 14 {
+        return vec![name.to_owned()];
+    }
+    let words: Vec<&str> = name.split_whitespace().collect();
+    if words.len() < 2 {
+        return vec![name.chars().take(14).collect()];
+    }
+    let mut best = 0usize;
+    let mut delta = usize::MAX;
+    let mut used = 0usize;
+    for (index, word) in words.iter().enumerate() {
+        used += word.len() + 1;
+        let diff = used.abs_diff(name.len() / 2);
+        if diff < delta {
+            delta = diff;
+            best = index;
+        }
+    }
+    vec![words[..=best].join(" "), words[best + 1..].join(" ")]
+}
+
 impl App {
     fn render(&mut self) -> Result<()> {
         let (w, h) = self.surface.size();
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
         s.begin();
-        s.fill_round(rect(0.0, 0.0, w, h), 8.0, t.card);
-        self.search.draw(s, t, f, rect(24.0, 28.0, w - 24.0, 72.0), true)?;
-        s.text_no_wrap("Fixados", &f.body, rect(24.0, 68.0, w - 24.0, GRID_TOP), t.text_primary);
-        let cells = self.grid.arrange(24.0, GRID_TOP);
-        s.with_clip(rect(0.0, GRID_TOP, w, PINNED_END), |s| {
-            for (index, cell) in cells {
-                if let Some(icon) = self.icons.get(index).and_then(|icon| icon.as_ref()) {
-                    let size = 32.0;
-                    icons::draw(s, icon, cell.left + (CELL - size) / 2.0, cell.top + 8.0, size);
-                }
-                let label: String = self.apps[index].name.chars().take(12).collect();
-                s.text_no_wrap(&label, &f.caption,
-                    rect(cell.left + 4.0, cell.top + 48.0, cell.right - 4.0, cell.bottom), t.text_primary);
+        // Real Start renders as a near-solid gray on this desktop; the WinUI
+        // card token is only a 5% white overlay and left a visible color tint.
+        let base = if t.dark {
+            windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                r: 40.0 / 255.0, g: 40.0 / 255.0, b: 40.0 / 255.0, a: 1.0,
             }
-        });
+        } else {
+            windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                r: 243.0 / 255.0, g: 243.0 / 255.0, b: 243.0 / 255.0, a: 1.0,
+            }
+        };
+        s.fill_round(rect(0.0, 0.0, w, h), 8.0, base);
+        self.search.draw(s, t, f, rect(SEARCH.0, SEARCH.1, SEARCH.2, SEARCH.3), false)?;
+
+        s.text_no_wrap("Fixado", &f.body,
+            rect(PAD, FIXED_LABEL_Y, w - PAD, FIXED_LABEL_Y + 20.0), t.text_primary);
+        for (index, app) in self.pinned.iter().enumerate() {
+            let r = pin_rect(index);
+            let center = r.left + 12.0 + PIN_ICON / 2.0;
+            if let Some(icon) = self.pinned_icons.get(index).and_then(|icon| icon.as_ref()) {
+                icons_draw(s, icon, center - PIN_ICON / 2.0, PIN_Y, PIN_ICON);
+            }
+            for (line, text) in label_lines(&app.name).into_iter().enumerate() {
+                s.text_no_wrap(&text, &f.caption,
+                    rect(r.left, PIN_Y + 46.0 + line as f32 * 15.0, r.right, PIN_Y + 62.0 + line as f32 * 15.0),
+                    t.text_primary);
+            }
+        }
+
         s.text_no_wrap("Recente", &f.body,
-            rect(24.0, RECENT_TOP, w - 24.0, RECENT_TOP + 24.0), t.text_primary);
-        for (index, item) in self.recent.iter().enumerate() {
+            rect(PAD, RECENT_LABEL_Y, w - PAD, RECENT_LABEL_Y + 20.0), t.text_primary);
+        s.text_no_wrap("Mostrar tudo  ›", &f.caption,
+            rect(w - 180.0, RECENT_LABEL_Y, w - PAD, RECENT_LABEL_Y + 20.0), t.text_secondary);
+        for (index, app) in self.recent.iter().enumerate() {
             let r = recent_rect(index);
             if let Some(icon) = self.recent_icons.get(index).and_then(|icon| icon.as_ref()) {
-                icons::draw(s, icon, r.left, r.top, 24.0);
+                icons_draw(s, icon, PAD + (index % 3) as f32 * RECENT_PITCH_X, r.top + 2.0, RECENT_ICON);
             }
-            let label: String = item.name.chars().take(22).collect();
-            s.text_no_wrap(&label, &f.caption,
-                rect(r.left + 32.0, r.top, r.right, r.top + 26.0), t.text_primary);
+            let text_x = PAD + (index % 3) as f32 * RECENT_PITCH_X + 40.0;
+            s.text_no_wrap(&app.name, &f.caption,
+                rect(text_x, r.top, r.right, r.top + 18.0), t.text_primary);
             s.text_no_wrap("Adicionados recentemente", &f.caption,
-                rect(r.left + 32.0, r.top + 26.0, r.right, r.bottom), t.text_secondary);
+                rect(text_x, r.top + 18.0, r.right, r.top + 36.0), t.text_secondary);
         }
-        s.text_no_wrap("Todos os aplicativos", &f.body,
-            rect(24.0, ALL_TOP, w - 24.0, ALL_TOP + 24.0), t.text_primary);
-        s.text_no_wrap("Exibir tudo ›", &f.caption,
-            rect(w - 140.0, ALL_TOP, w - 24.0, ALL_TOP + 24.0), t.text_secondary);
-        for (offset, index) in (PINNED_ROWS * fluent_win::grid_view::COLUMNS
-            ..self.apps.len()).take(fluent_win::grid_view::COLUMNS).enumerate()
-        {
-            let left = 24.0 + offset as f32 * (CELL + GAP);
-            let top = ALL_GRID_TOP;
-            if let Some(icon) = self.icons.get(index).and_then(|icon| icon.as_ref()) {
-                icons::draw(s, icon, left + (CELL - 32.0) / 2.0, top + 8.0, 32.0);
+
+        s.text_no_wrap("Todos", &f.body,
+            rect(PAD, ALL_LABEL_Y, w - PAD, ALL_LABEL_Y + 20.0), t.text_primary);
+        s.text_no_wrap("Exibição: Categoria  ⌄", &f.caption,
+            rect(w - 220.0, ALL_LABEL_Y, w - PAD, ALL_LABEL_Y + 20.0), t.text_secondary);
+        for (index, category) in self.categories.iter().enumerate().take(8) {
+            let col = index % 4;
+            let row = index / 4;
+            let left = PAD + col as f32 * CAT_PITCH_X;
+            let top = CAT_TOP + row as f32 * CAT_PITCH_Y;
+            s.fill_round(rect(left, top, left + CAT_W, top + CAT_H), 8.0, t.control_alt_fill_secondary);
+            for (slot, icon) in self.category_icons.get(index).into_iter().flatten().enumerate() {
+                if let Some(bitmap) = icon.as_ref() {
+                    let ix = left + 20.0 + (slot % 2) as f32 * 72.0;
+                    let iy = top + 16.0 + (slot / 2) as f32 * 48.0;
+                    icons_draw(s, bitmap, ix, iy, 30.0);
+                }
             }
-            let label: String = self.apps[index].name.chars().take(12).collect();
+            let label: String = category.name.chars().take(20).collect();
             s.text_no_wrap(&label, &f.caption,
-                rect(left + 4.0, top + 48.0, left + CELL - 4.0, top + CELL), t.text_primary);
+                rect(left, top + CAT_H + 6.0, left + CAT_W, top + CAT_H + 26.0), t.text_primary);
         }
-        s.fill_round(rect(0.0, h - POWER_BAR, w, h), 0.0, t.control_alt_fill_secondary);
-        s.text_no_wrap("Usuário", &f.body,
-            rect(24.0, h - POWER_BAR, w - 80.0, h), t.text_primary);
-        let power = power_rect(w, h);
-        s.fill_round(power, 8.0, t.card);
+
+        s.fill_round(rect(0.0, BAR_TOP, w, h), 0.0, t.control_alt_fill_secondary);
+        s.fill_round(rect(PAD, BAR_TOP + 8.0, PAD + 30.0, BAR_TOP + 38.0), 15.0, t.text_secondary);
+        s.text_no_wrap(&self.user, &f.body,
+            rect(PAD + 40.0, BAR_TOP + 6.0, w - 100.0, BAR_TOP + 40.0), t.text_primary);
+        let power = power_rect();
         s.text_no_wrap("⏻", &f.body, power, t.text_primary);
         if self.power_open {
             for (index, (label, action)) in POWER_ACTIONS.iter().enumerate() {
-                let r = power_item_rect(w, h, index);
-                // Opaque token: the grid is behind the menu and must not bleed through.
-                s.fill_round(r, 4.0, if self.pending == Some(*action) { t.accent } else { t.control_solid_fill });
+                let r = power_item_rect(index);
+                s.fill_round(r, 4.0,
+                    if self.pending == Some(*action) { t.accent } else { t.control_solid_fill });
                 s.stroke_round(r, 4.0, 1.0, t.stroke);
                 let text = if self.pending == Some(*action) {
                     format!("Confirmar: {}", label)
@@ -168,11 +226,20 @@ impl App {
         s.end()
     }
 
+    fn launch(&self, app: &AppInfo) -> Result<()> {
+        unsafe {
+            _ = ShellExecuteW(Some(self.hwnd), w!("open"),
+                &windows::core::HSTRING::from(app.path.to_string_lossy().as_ref()),
+                None, None, SW_SHOW);
+            _ = DestroyWindow(self.hwnd);
+        }
+        Ok(())
+    }
+
     fn click(&mut self, x: f32, y: f32) -> Result<()> {
-        let (w, h) = self.surface.size();
         if self.power_open {
             for (index, (_, action)) in POWER_ACTIONS.iter().enumerate() {
-                let r = power_item_rect(w, h, index);
+                let r = power_item_rect(index);
                 if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
                     if self.pending == Some(*action) || *action == PowerAction::Lock {
                         return session::perform(*action);
@@ -185,38 +252,46 @@ impl App {
             self.pending = None;
             return Ok(());
         }
-        let r = power_rect(w, h);
+        let r = power_rect();
         if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
             self.power_open = true;
             return Ok(());
         }
-        for (index, item) in self.recent.iter().enumerate() {
-            let r = recent_rect(index);
+        for index in 0..self.pinned.len().min(6) {
+            let r = pin_rect(index);
             if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
-                unsafe {
-                    _ = ShellExecuteW(Some(self.hwnd), w!("open"),
-                        &windows::core::HSTRING::from(item.path.to_string_lossy().as_ref()),
-                        None, None, SW_SHOW);
-                }
-                unsafe { _ = DestroyWindow(self.hwnd) };
-                return Ok(());
+                return self.launch(&self.pinned[index].clone());
             }
         }
-        let Some(index) = self.grid.hit(x, y, 24.0, GRID_TOP) else { return Ok(()) };
-        let Some(app) = self.apps.get(index) else { return Ok(()) };
-        unsafe {
-            _ = ShellExecuteW(Some(self.hwnd), w!("open"),
-                &windows::core::HSTRING::from(app.path.to_string_lossy().as_ref()),
-                None, None, SW_SHOW);
+        for index in 0..self.recent.len() {
+            let r = recent_rect(index);
+            if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
+                return self.launch(&self.recent[index].clone());
+            }
         }
-        unsafe { _ = DestroyWindow(self.hwnd) };
+        for (index, category) in self.categories.iter().enumerate().take(8) {
+            let left = PAD + (index % 4) as f32 * CAT_PITCH_X;
+            let top = CAT_TOP + (index / 4) as f32 * CAT_PITCH_Y;
+            if x >= left && x < left + CAT_W && y >= top && y < top + CAT_H
+                && let Some(app) = category.apps.first()
+            {
+                return self.launch(&app.clone());
+            }
+        }
         Ok(())
     }
 }
 
+fn icons_draw(surface: &Surface, bitmap: &Bitmap, x: f32, y: f32, size: f32) {
+    fluent_win::icons::draw(surface, bitmap, x, y, size);
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
-        WM_PAINT => with_app(App::render),
+        WM_PAINT => {
+            unsafe { _ = windows::Win32::Graphics::Gdi::ValidateRect(Some(hwnd), None) };
+            with_app(App::render)
+        }
         WM_CHAR => with_app(|app| {
             if let Some(c) = char::from_u32(wp.0 as u32)
                 && !c.is_control()
@@ -229,10 +304,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             let k = app.surface.scale();
             app.click((lp.0 & 0xffff) as f32 / k, ((lp.0 >> 16) & 0xffff) as f32 / k)
         }),
-        WM_ACTIVATE if u32::from((wp.0 & 0xffff) as u16) == WA_INACTIVE => {
-            unsafe { _ = DestroyWindow(hwnd) };
+        WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => unsafe {
+            _ = DestroyWindow(hwnd);
             LRESULT(0)
-        }
+        },
         WM_DESTROY => unsafe {
             PostQuitMessage(0);
             LRESULT(0)
@@ -253,7 +328,7 @@ fn main() -> Result<()> {
             ..Default::default()
         });
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Iniciar"),
-            WS_POPUP | WS_VISIBLE, 200, 120, WIDTH as i32, HEIGHT as i32,
+            WS_POPUP | WS_VISIBLE, 12, 307, WIDTH as i32, HEIGHT as i32,
             None, None, Some(instance.into()), None)?;
         let theme = Theme::system();
         _ = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark);
@@ -261,20 +336,26 @@ fn main() -> Result<()> {
         let formats = Formats::new(&surface)?;
         let apps = app_list::enumerate()?;
         let recent = app_list::recent().unwrap_or_default();
-        let mut cache = IconCache::new();
-        let icons = apps.iter()
-            .map(|app| cache.get(&surface, &app.path.to_string_lossy(), 32).ok().cloned())
-            .collect();
-        let recent_icons = recent.iter()
-            .map(|item| cache.get(&surface, &item.path.to_string_lossy(), 24).ok().cloned())
-            .collect();
+        let categories = app_list::categories().unwrap_or_default();
+        let mut cache = fluent_win::icons::IconCache::new();
+        let mut load = |path: &std::path::Path, size: u32| {
+            cache.get(&surface, &path.to_string_lossy(), size).ok().cloned()
+        };
+        let pinned: Vec<AppInfo> = apps.iter().take(6).cloned().collect();
+        let pinned_icons = pinned.iter().map(|app| load(&app.path, 40)).collect();
+        let recent_icons = recent.iter().map(|app| load(&app.path, 28)).collect();
+        let category_icons = categories.iter().map(|category| {
+            category.apps.iter().map(|app| load(&app.path, 30)).collect()
+        }).collect();
         let mut search = TextBox::new("");
         search.placeholder = app_list::SEARCH_PLACEHOLDER.to_owned();
-        let mut grid = Grid::new(apps.len());
-        grid.set_viewport(PINNED_ROWS as f32 * (CELL + GAP));
+        let user = std::env::var("USERNAME").unwrap_or_else(|_| "Usuário".to_owned());
         APP.with(|cell| {
-            *cell.borrow_mut() = Some(App { hwnd, surface, theme, formats, grid, apps, icons,
-                recent, recent_icons, search, power_open: false, pending: None });
+            *cell.borrow_mut() = Some(App {
+                hwnd, surface, theme, formats, search, pinned, pinned_icons,
+                recent, recent_icons, categories, category_icons, user,
+                power_open: false, pending: None,
+            });
         });
         with_app(App::render);
         let mut msg = MSG::default();
