@@ -221,6 +221,8 @@ struct App {
     _hook: Option<ShellHook>,
     windows: Vec<WindowInfo>,
     icons: Vec<Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>>,
+    /// Executable icons, kept across shell events so a redraw does not re-extract.
+    icon_cache: icons::IconCache,
     active: Option<HWND>,
 }
 
@@ -288,7 +290,7 @@ fn locale_text() -> (String, String) {
 
 /// Icon of a top-level window: the shell icon of its executable. `WM_GETICON`
 /// is unreliable for modern apps and its HICON mask needs extra compositing.
-fn window_icon(surface: &Surface, hwnd: HWND) -> Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1> {
+fn window_icon(surface: &Surface, cache: &mut icons::IconCache, hwnd: HWND) -> Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1> {
     unsafe {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
@@ -307,7 +309,6 @@ fn window_icon(surface: &Surface, hwnd: HWND) -> Option<windows::Win32::Graphics
             return None;
         }
         let path = String::from_utf16_lossy(&buffer[..len as usize]);
-        let mut cache = icons::IconCache::new();
         cache.get(surface, &path, 32).ok().cloned()
     }
 }
@@ -432,7 +433,9 @@ impl App {
             .into_iter()
             .filter(|info| info.hwnd != self.hwnd && !info.title.is_empty())
             .collect();
-        self.icons = list.iter().map(|info| window_icon(surface, info.hwnd)).collect();
+        let cache = &mut self.icon_cache;
+        let icons: Vec<_> = list.iter().map(|info| window_icon(surface, cache, info.hwnd)).collect();
+        self.icons = icons;
         self.windows = list;
     }
 
@@ -450,7 +453,9 @@ impl App {
         let list: Vec<WindowInfo> = snapshot.into_iter()
             .filter(|info| info.hwnd != self.hwnd && !info.title.is_empty())
             .collect();
-        self.icons = list.iter().map(|info| window_icon(surface, info.hwnd)).collect();
+        let cache = &mut self.icon_cache;
+        let icons: Vec<_> = list.iter().map(|info| window_icon(surface, cache, info.hwnd)).collect();
+        self.icons = icons;
         self.windows = list;
         self.render()
     }
@@ -610,7 +615,8 @@ fn main() -> Result<()> {
             let hook = if index == 0 { Some(ShellHook::new(hwnd)?) } else { None };
             APP.with(|cell| cell.borrow_mut().push(App {
                 hwnd, surface, theme, formats, bar, backdrop, _hook: hook,
-                windows: windows.clone(), icons: Vec::new(), active: None,
+                windows: windows.clone(), icons: Vec::new(),
+                icon_cache: icons::IconCache::new(), active: None,
             }));
         }
         with_apps(|apps| {

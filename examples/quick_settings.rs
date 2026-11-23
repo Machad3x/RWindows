@@ -16,6 +16,7 @@ use fluent_win::slider::Slider;
 use fluent_win::theme::{self, Theme};
 use windows::Devices::Radios::RadioKind;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::ValidateRect;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -75,6 +76,10 @@ struct App {
     surface: Surface,
     theme: Theme,
     formats: Formats,
+    symbol: IDWriteTextFormat,
+    small: IDWriteTextFormat,
+    /// True when at least one tile label is wider than its tile.
+    marquee: bool,
     volume: Option<Volume>,
     radios: Option<Radios>,
     radio_infos: Vec<RadioInfo>,
@@ -101,7 +106,7 @@ impl App {
     fn render(&mut self) -> Result<()> {
         let (w, h) = self.surface.size();
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
-        let symbol = s.icon_format(18.0)?;
+        let symbol = &self.symbol;
         s.begin();
         // DWM TransientWindow supplies the blurred Acrylic; the theme tint
         // keeps it subdued like the real flyout, in light or dark mode.
@@ -117,15 +122,14 @@ impl App {
             // The symbol font has asymmetric side bearings: centre the ink,
             // not the text box.
             let glyph_left = left + GLYPH_X[index] - 15.0;
-            s.text_no_wrap(TILES[index].0, &symbol,
+            s.text_no_wrap(TILES[index].0, symbol,
                 rect(glyph_left, top + 10.0, glyph_left + 30.0, top + 42.0),
                 if self.tiles[index].on { t.text_on_accent } else { t.text_primary });
             if HAS_SEPARATOR[index] {
                 // Thin divider between the icon area and the chevron area.
                 s.fill_round(rect(left + 54.0, top + 12.0, left + 55.0, top + 46.0),
                     0.0, theme::with_opacity(t.text_primary, 0.35));
-                let small = s.icon_format(12.0)?;
-                s.text_no_wrap("\u{E76C}", &small,
+                s.text_no_wrap("\u{E76C}", &self.small,
                     rect(left + 66.0, top + 12.0, left + 84.0, top + 40.0),
                     if self.tiles[index].on { t.text_on_accent } else { t.text_secondary });
             }
@@ -133,6 +137,12 @@ impl App {
             let label_rect = rect(left, top + TILE_H + 2.0,
                 left + TILE_W, top + TILE_H + 18.0);
             let available = label_rect.right - label_rect.left;
+            // Measuring is only needed when a label can scroll; otherwise every
+            // label fits by construction.
+            if !self.marquee {
+                s.text_no_wrap(label, &f.caption, label_rect, t.text_primary);
+                continue;
+            }
             let (text_w, _) = s.measure(label, &f.caption)?;
             let chars: Vec<char> = label.chars().collect();
             if text_w <= available || chars.is_empty() {
@@ -156,10 +166,10 @@ impl App {
             }
         }
         s.fill_round(rect(0.0, DIVIDER_Y, w, DIVIDER_Y + 1.0), 0.0, t.divider);
-        s.text_no_wrap("\u{E767}", &symbol, rect(24.0, 232.0, 56.0, 264.0), t.text_primary);
+        s.text_no_wrap("\u{E767}", symbol, rect(24.0, 232.0, 56.0, 264.0), t.text_primary);
         self.volume_slider.draw(s, t)?;
-        s.text_no_wrap("\u{E713}", &symbol, rect(320.0, 232.0, 348.0, 264.0), t.text_secondary);
-        s.text_no_wrap("\u{E713}", &symbol, rect(w - 44.0, h - 36.0, w - 16.0, h - 8.0), t.text_secondary);
+        s.text_no_wrap("\u{E713}", symbol, rect(320.0, 232.0, 348.0, 264.0), t.text_secondary);
+        s.text_no_wrap("\u{E713}", symbol, rect(w - 44.0, h - 36.0, w - 16.0, h - 8.0), t.text_secondary);
         s.end()
     }
 
@@ -368,6 +378,13 @@ fn main() -> Result<()> {
         _ = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark);
         let surface = Surface::new(hwnd)?;
         let formats = Formats::new(&surface)?;
+        let symbol = surface.icon_format(18.0)?;
+        let small = surface.icon_format(12.0)?;
+        // The labels are static: decide once whether any of them needs to scroll.
+        let marquee = TILES.iter().any(|(_, label)| {
+            surface.measure(label, &formats.caption)
+                .is_ok_and(|(width, _)| width > TILE_W)
+        });
         let volume = Volume::new().ok();
         let level = volume.as_ref().and_then(|v| v.level().ok()).unwrap_or(0.5);
         let radios = Radios::load().ok();
@@ -375,11 +392,15 @@ fn main() -> Result<()> {
         let volume_slider = Slider::new("Volume", rect(62.0, 232.0, 306.0, 264.0),
             0.0, 100.0, quick_settings::percent(level) as f64);
         let mut app = App {
-            surface, theme, formats, volume, radios, radio_infos, volume_slider,
-            tiles: [Tile { on: false }; 6], captured: false, focus: false, scroll: 0,
+            surface, theme, formats, symbol, small, marquee, volume, radios, radio_infos,
+            volume_slider, tiles: [Tile { on: false }; 6], captured: false, focus: false,
+            scroll: 0,
         };
         app.sync_tiles();
-        _ = SetTimer(Some(hwnd), SCROLL_TIMER, 40, None);
+        // No idle 40 ms timer when every label already fits.
+        if app.marquee {
+            _ = SetTimer(Some(hwnd), SCROLL_TIMER, 40, None);
+        }
         APP.with(|cell| *cell.borrow_mut() = Some(app));
         with_app(App::render);
         let mut msg = MSG::default();
