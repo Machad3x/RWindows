@@ -309,7 +309,7 @@ impl Button {
         let (w, h) = surface.measure(label, format)?;
         let width = w + PADDING.0 + PADDING.2 + 2.0 * BORDER;
         let height = h + PADDING.1 + PADDING.3 + 2.0 * BORDER;
-        Ok((width.ceil(), height.round()))
+        Ok((width.round(), height.round()))
     }
 
     /// True while this button holds the mouse capture (left button pressed on it).

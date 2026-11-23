@@ -315,7 +315,7 @@ impl Slider {
 
     /// Target brushes for the current visual state.
     pub fn style(&self, t: &Theme) -> SliderStyle {
-        style_of(self.visual(), self.thumb_visual(), t)
+        style_of(self.visual(), t)
     }
 
     /// Track height: `SliderTrackThemeHeight` (2 in high contrast, else 4).
@@ -363,7 +363,7 @@ fn contains(r: D2D_RECT_F, x: f32, y: f32) -> bool {
 }
 
 /// `Slider*` brushes for the Slider's CommonStates (they also set the thumb fill).
-fn style_of(visual: Visual, _thumb: Visual, t: &Theme) -> SliderStyle {
+fn style_of(visual: Visual, t: &Theme) -> SliderStyle {
     if let Some(c) = t.high_contrast {
         let (track, value, thumb) = match visual {
             Visual::Rest => (c.button_text, c.highlight, c.button_text),

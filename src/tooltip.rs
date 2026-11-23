@@ -152,7 +152,7 @@ impl Host {
         self.entered = now;
         self.shown = false;
         self.bounds = None;
-        self.reshow = self.last_close.is_some_and(|t| now.duration_since(t) < RESHOW_WINDOW);
+        self.reshow = self.last_close.is_some_and(|t| now.saturating_duration_since(t) < RESHOW_WINDOW);
         close.then_some(Action::Close)
     }
 
@@ -211,7 +211,7 @@ impl Host {
     /// Advances the open/close timers; call again with [`Self::next_delay`].
     pub fn tick(&mut self, now: Instant) -> Option<Action> {
         if let Some(opened) = self.opened {
-            if now.duration_since(opened) >= self.timing.duration {
+            if now.saturating_duration_since(opened) >= self.timing.duration {
                 self.opened = None;
                 self.last_close = Some(now);
                 return Some(Action::Close);
@@ -222,7 +222,7 @@ impl Host {
         if self.shown {
             return None;
         }
-        if now.duration_since(self.entered) >= self.timing.delay(self.reshow) {
+        if now.saturating_duration_since(self.entered) >= self.timing.delay(self.reshow) {
             self.opened = Some(now);
             self.shown = true;
             return Some(Action::Open(owner));
