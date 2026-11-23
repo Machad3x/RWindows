@@ -18,6 +18,7 @@ pub mod easing;
 pub mod flyout;
 pub mod gfx;
 pub mod grid_view;
+pub mod hotkeys;
 pub mod icons;
 pub mod layout;
 pub mod list_view;

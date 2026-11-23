@@ -453,6 +453,10 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 
 `quick_settings::Volume` mantém o `IMMDeviceEnumerator` e abre o dispositivo padrão em cada operação, para que trocar de fone redirecione o slider (o mesmo padrão do WinRust); volume e mudo usam `IAudioEndpointVolume` documentado. `brightness()` / `set_brightness()` usam os IOCTLs documentados `IOCTL_VIDEO_QUERY_DISPLAY_BRIGHTNESS` e `IOCTL_VIDEO_SET_DISPLAY_BRIGHTNESS` em `\\.\LCD`, escolhendo AC/DC por `GetSystemPowerStatus`. `examples/quick_settings.rs` desenha o flyout com `Slider` real: verificado no Windows 26H2 — clique no slider mudou o volume do sistema de 100 para 23, e 5× seta esquerda mudou de 23 para 18. Nesta máquina desktop o brilho reporta `None` (sem painel de notebook), então o slider aparece desabilitado. Limites: os tiles de Wi-Fi/Bluetooth/modo avião são apenas estado local (ligar rádios exige WinRT `Radios`, planejado), sem recomendados, notificações, UIA própria nem botão de energia.
 
+### Atalhos globais
+
+`hotkeys::KeyboardHook` instala um hook `WH_KEYBOARD_LL` com `hMod = NULL` (o procedimento fica no próprio executável) e posta `WM_SHORTCUT` para uma janela em vez de trabalhar dentro do callback. Win+E abre o Explorer via `ShellExecuteW` e Win+D enumera janelas visíveis, não minimizadas e sem dono, guardando os HWNDs para restaurar no segundo Win+D. Verificado no Windows 26H2 com `keybd_event`: Win+E criou uma janela do Explorer e Win+D minimizou/restaurou 10 janelas, sem teclas presas. `RegisterHotKey` não serve aqui porque o Explorer já detém Win+E/Win+D. O hook usa 0xE8 como tecla marcadora para o Windows não abrir o Iniciar ao soltar Win (`shortcut:` no código); faltam Win+L, Win+Tab e ambientes de trabalho virtuais.
+
 ## Verificações não feitas
 
 Quatro caminhos ficaram sem verificação prática nesta máquina, por limites concretos:

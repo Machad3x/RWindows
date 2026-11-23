@@ -65,7 +65,7 @@ Modo de desenvolvimento **seguro**: o shell roda como um aplicativo comum, com o
 - [ ] **Iniciar**: grade de fixados virtualizada, ícones reais e busca implementados em `examples/start.rs` e verificados no Windows; falta lista de recomendados, busca de arquivos/configurações, botão de energia e UIA. ❓ Lista de fixados reais fica em banco não documentado; usamos os apps instalados das pastas do Menu Iniciar.
 - [ ] **Configurações rápidas**: volume e brilho reais implementados em `examples/quick_settings.rs` e verificados no Windows (clique e setas mudam o volume do sistema; o brilho reporta `None` neste desktop). Faltam Wi-Fi, Bluetooth e modo avião — os tiles hoje são só estado local; ❓ ligar rádios exige WinRT `Radios` (o WinRust usa `Wlan*` para listar e `Radios` para ligar/desligar). Falta também notificações e UIA própria.
 - [ ] **Central de notificações e calendário**. ❓ Como receber as notificações dos apps (`UserNotificationListener` exige permissão e identidade de pacote).
-- [ ] Atalhos globais: tecla Windows, Win+D, Win+E, Win+L, Alt+Tab. ❓ Quais o Winlogon/explorer tratam e quais o shell precisa registrar.
+- [ ] Atalhos globais: Win+E e Win+D implementados com `WH_KEYBOARD_LL` em `hotkeys.rs` e verificados no Windows (Explorer abre; 10 janelas minimizam/restauram; nenhuma tecla presa). `RegisterHotKey` não funciona porque o Explorer já detém essas combinações. Faltam Win+L, Win+Tab, Win+número e ambientes de trabalho virtuais.
 
 ---
 
