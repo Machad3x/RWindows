@@ -320,9 +320,14 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(wndproc),
             ..Default::default()
         });
-        let (x, y) = metrics::centered_bottom(WIDTH, HEIGHT);
+        // Clamp the design size to the work area so the panel fits any screen.
+        let work = metrics::work_rect();
+        let k = metrics::scale();
+        let width = WIDTH.min(((work.right - work.left) as f32 / k) - 32.0);
+        let height = HEIGHT.min(((work.bottom - work.top) as f32 / k) - 16.0);
+        let (x, y) = metrics::centered_bottom(width, height);
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Iniciar"),
-            WS_POPUP | WS_VISIBLE, x, y, WIDTH as i32, HEIGHT as i32,
+            WS_POPUP | WS_VISIBLE, x, y, width as i32, height as i32,
             None, None, Some(instance.into()), None)?;
         let theme = Theme::system();
         _ = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark);
