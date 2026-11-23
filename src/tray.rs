@@ -41,11 +41,16 @@ const OFF_STATE: usize = 288;
 const OFF_STATE_MASK: usize = 292;
 const OFF_VERSION: usize = 808;
 const OFF_GUID: usize = 944;
+const OFF_INFO: usize = 296;
+const OFF_INFO_END: usize = 808;
+const OFF_INFO_TITLE: usize = 812;
+const OFF_INFO_TITLE_END: usize = 940;
 
 const NIF_MESSAGE: u32 = 0x1;
 const NIF_ICON: u32 = 0x2;
 const NIF_TIP: u32 = 0x4;
 const NIF_STATE: u32 = 0x8;
+const NIF_INFO: u32 = 0x10;
 const NIF_GUID: u32 = 0x20;
 const NIS_HIDDEN: u32 = 0x1;
 
@@ -83,10 +88,26 @@ pub struct IconData {
     pub hicon: usize,
     /// NIF_* flags present in this message, so MODIFY only touches set fields.
     pub flags: u32,
+    /// Balloon title (NIF_INFO).
+    pub info_title: String,
+    /// Balloon body (NIF_INFO).
+    pub info: String,
 }
 
 fn u32_at(data: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+}
+
+fn string_at(data: &[u8], start: usize, end: usize) -> String {
+    let mut units = Vec::new();
+    if data.len() >= end {
+        for pair in data[start..end].as_chunks::<2>().0 {
+            let unit = u16::from_le_bytes([pair[0], pair[1]]);
+            if unit == 0 { break }
+            units.push(unit);
+        }
+    }
+    String::from_utf16_lossy(&units)
 }
 
 /// Parses a `WM_COPYDATA` payload, or `None` when it is too short.
@@ -127,6 +148,12 @@ pub fn parse(data: &[u8]) -> Option<(Operation, IconData)> {
             0
         },
         flags,
+        info_title: if flags & NIF_INFO != 0 {
+            string_at(data, OFF_INFO_TITLE, OFF_INFO_TITLE_END)
+        } else { String::new() },
+        info: if flags & NIF_INFO != 0 {
+            string_at(data, OFF_INFO, OFF_INFO_END)
+        } else { String::new() },
     };
     let operation = match u32_at(data, OFF_OP) {
         0 => Operation::Add,
@@ -303,6 +330,25 @@ impl Drop for Tray {
 
 thread_local! {
     static TRAY: std::cell::RefCell<Option<Tray>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Installs the hidden tray host on the calling thread.
+pub fn install(hinstance: windows::Win32::Foundation::HINSTANCE) -> Result<HWND> {
+    Tray::install(hinstance)
+}
+
+/// Copies of the HICONs the apps sent, in tray order.
+pub fn icons() -> Vec<windows::Win32::UI::WindowsAndMessaging::HICON> {
+    TRAY.with(|cell| cell.borrow().as_ref().map_or(Vec::new(), |tray| {
+        tray.icons.iter().map(|entry| entry.icon).collect()
+    }))
+}
+
+/// Tray items with tooltips and balloon text, in tray order.
+pub fn items() -> Vec<IconData> {
+    TRAY.with(|cell| cell.borrow().as_ref().map_or(Vec::new(), |tray| {
+        tray.icons.iter().map(|entry| entry.data.clone()).collect()
+    }))
 }
 
 /// Number of icons in the installed tray.

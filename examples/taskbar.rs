@@ -15,12 +15,11 @@ use fluent_win::icons;
 use fluent_win::menu_flyout::{Entry, Item, MenuFlyout};
 use fluent_win::metrics;
 use fluent_win::panel::Formats;
-use fluent_win::screen_capture;
 use fluent_win::theme::{self, Theme};
+use fluent_win::tray;
 use fluent_win::uia::{self, WM_UIA_INVOKE};
 use fluent_win::window_list::{self, ShellHook, WindowInfo};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
@@ -46,13 +45,12 @@ use windows::Win32::UI::Shell::{
     ABM_GETTASKBARPOS, ABN_POSCHANGED, APPBARDATA, SHAppBarMessage, ShellExecuteW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
     ReleaseCapture, SetCapture, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_RETURN, VK_SPACE, VK_UP,
-    VIRTUAL_KEY, mouse_event,
+    VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowExW, FindWindowW,
-    GetMessageW, SetCursorPos,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetMessageW,
     GetWindowRect, GetWindowThreadProcessId, HSHELL_HIGHBIT, HSHELL_MONITORCHANGED, HSHELL_REDRAW,
     HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW, IsIconic,
     IsWindow, KillTimer, LoadCursorW, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
@@ -77,6 +75,90 @@ thread_local! {
     static MENU: RefCell<Option<MenuPopup>> = const { RefCell::new(None) };
     /// Kept outside MENU: WM_GETOBJECT can arrive while MENU is borrowed.
     static MENU_UIA: RefCell<Option<uia::Shared>> = const { RefCell::new(None) };
+    /// One toast popup for balloon notifications from the tray.
+    static TOAST: RefCell<Option<Toast>> = const { RefCell::new(None) };
+}
+
+/// A balloon notification drawn in our own popup above the bar.
+struct Toast {
+    surface: Surface,
+    formats: Formats,
+    theme: Theme,
+    title: String,
+    body: String,
+}
+
+const TOAST_TIMER: usize = 2;
+
+extern "system" fn toast_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_PAINT => {
+            unsafe { _ = ValidateRect(Some(hwnd), None) };
+            TOAST.with(|cell| {
+                if let Ok(mut guard) = cell.try_borrow_mut()
+                    && let Some(toast) = guard.as_mut()
+                {
+                    let _ = toast.render();
+                }
+            });
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == TOAST_TIMER => unsafe {
+            _ = DestroyWindow(hwnd);
+            LRESULT(0)
+        },
+        WM_DESTROY => {
+            TOAST.with(|cell| drop(cell.borrow_mut().take()));
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+    }
+}
+
+impl Toast {
+    fn render(&mut self) -> Result<()> {
+        let (w, h) = self.surface.size();
+        let style = flyout::style(&self.theme, true);
+        let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
+        s.begin();
+        flyout::draw_chrome(s, &style, (w, h));
+        s.text_no_wrap(&self.title, &f.caption,
+            rect(12.0, 10.0, w - 12.0, 30.0), t.text_primary);
+        s.text(&self.body, &f.body,
+            rect(12.0, 34.0, w - 12.0, h - 12.0), t.text_secondary);
+        s.end()
+    }
+}
+
+fn show_toast(bar_hwnd: HWND, theme: Theme, title: String, body: String) -> Result<()> {
+    let monitor = unsafe { MonitorFromWindow(bar_hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    unsafe { _ = GetMonitorInfoW(monitor, &mut info); }
+    let mut bar = RECT::default();
+    unsafe { _ = GetWindowRect(bar_hwnd, &mut bar); }
+    let k = metrics::scale();
+    let w = 320.0 * k;
+    let h = 110.0 * k;
+    let x = info.rcWork.right as f32 - w - 8.0 * k;
+    let y = bar.top as f32 - h - 8.0 * k;
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            w!("fluent-win-toast"), w!(""), WS_POPUP | WS_VISIBLE,
+            x.round() as i32, y.round() as i32, w.round() as i32, h.round() as i32,
+            Some(bar_hwnd), None, None, None)?
+    };
+    _ = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark);
+    let surface = Surface::new(hwnd)?;
+    let formats = Formats::new(&surface)?;
+    TOAST.with(|cell| *cell.borrow_mut() = Some(Toast {
+        surface, formats, theme, title, body,
+    }));
+    unsafe {
+        _ = SetTimer(Some(hwnd), TOAST_TIMER, 6000, None);
+        _ = ShowWindow(hwnd, SW_SHOW);
+    }
+    Ok(())
 }
 
 /// Context menu as its own popup window, drawn with our `MenuFlyout`.
@@ -229,11 +311,10 @@ struct App {
     /// Executable icons, kept across shell events so a redraw does not re-extract.
     icon_cache: icons::IconCache,
     active: Option<HWND>,
-    /// Mirror of Explorer's notification area while Explorer is the shell.
-    tray_strip: Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>,
-    /// Source rectangle of the notification area inside the captured strip.
-    tray_src: D2D_RECT_F,
-    tray_width: f32,
+    /// HICONs received through our own tray host, in tray order.
+    tray_bitmaps: Vec<Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>>,
+    /// Last balloon text shown, so a timer tick does not repeat a toast.
+    last_balloon: Option<String>,
 }
 
 extern "system" fn each_monitor(monitor: HMONITOR, _hdc: HDC, _rect: *mut RECT, data: LPARAM) -> BOOL {
@@ -256,15 +337,6 @@ fn system_taskbar(monitor: HMONITOR) -> Option<RECT> {
         }
         let bar = data.rc;
         (bar.bottom == info.rcMonitor.bottom && bar.top > info.rcMonitor.top).then_some(bar)
-    }
-}
-
-/// Explorer's taskbar and its notification-area window.
-fn tray_windows() -> Option<(HWND, HWND)> {
-    unsafe {
-        let tray = FindWindowW(w!("Shell_TrayWnd"), None).ok()?;
-        let notify = FindWindowExW(Some(tray), None, w!("TrayNotifyWnd"), None).ok()?;
-        Some((tray, notify))
     }
 }
 
@@ -395,29 +467,6 @@ fn open_notifications() {
     }
 }
 
-/// Clicks the real Explorer tray under our mirrored strip. The bar sits just
-/// above the taskbar, so the x coordinate maps one to one.
-fn forward_tray_click(x: i32, right: bool) -> Result<()> {
-    let Some((taskbar, _)) = tray_windows() else { return Ok(()) };
-    let mut rect = RECT::default();
-    unsafe { GetWindowRect(taskbar, &mut rect)?; }
-    let y = (rect.top + rect.bottom) / 2;
-    unsafe {
-        // The original press captured the mouse to our window; release it so
-        // the synthetic click reaches Explorer's tray instead.
-        _ = ReleaseCapture();
-        SetCursorPos(x, y)?;
-        let (down, up) = if right {
-            (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP)
-        } else {
-            (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
-        };
-        mouse_event(down, 0, 0, 0, 0);
-        mouse_event(up, 0, 0, 0, 0);
-    }
-    Ok(())
-}
-
 /// Start of the clock area, measured from the real strings so locale and DPI
 /// changes never need a reserved pixel count.
 fn clock_left(app: &App, w: f32, h: f32) -> f32 {
@@ -427,10 +476,9 @@ fn clock_left(app: &App, w: f32, h: f32) -> f32 {
     w - tw.max(dw) - h / 3.0 - h / 6.0
 }
 
-/// Start of the right-hand area: the mirrored tray when Explorer is alive,
-/// otherwise the measured clock.
+/// Start of the tray area: a chevron slot plus one slot per received icon.
 fn tray_left(app: &App, w: f32, h: f32) -> f32 {
-    if app.tray_strip.is_some() { w - app.tray_width } else { clock_left(app, w, h) }
+    clock_left(app, w, h) - (app.tray_bitmaps.len() + 1) as f32 * (h / 2.0)
 }
 
 impl App {
@@ -535,39 +583,22 @@ impl App {
         self.render()
     }
 
-    /// Mirrors Explorer's notification area by copying its pixels; it exposes no
-/// icon toolbar on the current Windows 11, and stealing Shell_NotifyIcon would
-/// break Explorer. A real shell uses the tray module instead.
-fn refresh_tray(&mut self) {
-    let Some((taskbar, notify)) = tray_windows() else {
-        self.tray_strip = None;
-        return;
-    };
-    let Ok(handle) = screen_capture::window_bits(taskbar) else {
-        self.tray_strip = None;
-        return;
-    };
-    match icons::from_hbitmap(&self.surface, handle) {
-        Ok(bitmap) => {
-            let outer = unsafe {
-                let mut r = RECT::default();
-                _ = GetWindowRect(taskbar, &mut r);
-                r
-            };
-            let inner = unsafe {
-                let mut r = RECT::default();
-                _ = GetWindowRect(notify, &mut r);
-                r
-            };
-            let k = self.surface.scale();
-            self.tray_src = rect((inner.left - outer.left) as f32, (inner.top - outer.top) as f32,
-                (inner.right - outer.left) as f32, (inner.bottom - outer.top) as f32);
-            self.tray_width = (inner.right - inner.left) as f32 / k;
-            self.tray_strip = Some(bitmap);
+    /// Loads the icons our tray host received from Shell_NotifyIcon.
+    fn refresh_tray(&mut self) {
+        self.tray_bitmaps = tray::icons().into_iter()
+            .map(|icon| icons::from_hicon(&self.surface, icon).ok())
+            .collect();
+        let balloon = tray::items().into_iter()
+            .find(|item| !item.info.is_empty())
+            .map(|item| (item.info_title, item.info));
+        if let Some((title, body)) = balloon {
+            let key = format!("{title}\0{body}");
+            if self.last_balloon.as_deref() != Some(key.as_str()) {
+                self.last_balloon = Some(key);
+                _ = show_toast(self.hwnd, self.theme, title, body);
+            }
         }
-        Err(_) => self.tray_strip = None,
     }
-}
 
     /// Rebuilds the task-button list from all top-level windows.
     fn refresh_windows(&mut self) {
@@ -605,21 +636,26 @@ fn refresh_tray(&mut self) {
         self.render()
     }
 
-    /// True when the pointer is over the mirrored tray/clock area.
+    /// True when the pointer is over the tray/clock area.
     fn in_right_area(&self, x_px: i32) -> bool {
         let (w, h) = self.surface.size();
-        self.tray_strip.is_some()
+        !self.tray_bitmaps.is_empty()
             && x_px as f32 / self.surface.scale() >= tray_left(self, w, h)
     }
 
     /// Left click: Start/task buttons on the left, tray or clock on the right.
     fn click_left(&mut self, x_px: i32) -> Result<()> {
         if self.in_right_area(x_px) {
+            let dip = x_px as f32 / self.surface.scale();
             let (w, h) = self.surface.size();
-            if x_px as f32 / self.surface.scale() >= clock_left(self, w, h) {
+            if dip >= clock_left(self, w, h) {
                 open_notifications();
             } else {
-                forward_tray_click(x_px, false)?;
+                let slot = h / 2.0;
+                let index = ((dip - tray_left(self, w, h)) / slot) as isize - 1;
+                if index >= 0 && (index as usize) < self.tray_bitmaps.len() {
+                    _ = tray::click(index as usize, true);
+                }
             }
             return Ok(());
         }
@@ -700,26 +736,26 @@ fn refresh_tray(&mut self) {
                 }
             }
         });
-        if let Some(strip) = &self.tray_strip {
-            // The real pixels, so icons, labels and clock match exactly while
-            // Explorer is the shell. Crop to its notification-area window.
-            let dest = rect(tray_left, 0.0, w, h);
-            let src = self.tray_src;
-            unsafe {
-                s.ctx().DrawBitmap(strip, Some(&dest), 1.0,
-                    windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE_LINEAR,
-                    Some(&src), None);
+        // Tray: chevron slot, then the icons apps sent via Shell_NotifyIcon.
+        let tray_slot = h / 2.0;
+        let tray_icon = h / 3.0;
+        s.text_no_wrap("\u{E70D}", &f.icon,
+            rect(tray_left, 0.0, tray_left + tray_slot, h), t.text_secondary);
+        for (index, bitmap) in self.tray_bitmaps.iter().enumerate() {
+            if let Some(bitmap) = bitmap {
+                let x = tray_left + tray_slot + index as f32 * tray_slot;
+                icons::draw(s, bitmap, x + (tray_slot - tray_icon) / 2.0,
+                    (h - tray_icon) / 2.0, tray_icon);
             }
-        } else {
-            // Windows 11 stacks time over date, right aligned.
-            let clock_rect = rect(clock_left, 0.0, w - pad, h);
-            s.text_no_wrap(&time, &f.caption,
-                rect(clock_rect.left, clock_rect.top, clock_rect.right, clock_rect.bottom / 2.0),
-                t.text_primary);
-            s.text_no_wrap(&date, &f.caption,
-                rect(clock_rect.left, clock_rect.bottom / 2.0, clock_rect.right, clock_rect.bottom),
-                t.text_secondary);
         }
+        // Windows 11 stacks time over date, right aligned.
+        let clock_rect = rect(clock_left, 0.0, w - pad, h);
+        s.text_no_wrap(&time, &f.caption,
+            rect(clock_rect.left, clock_rect.top, clock_rect.right, clock_rect.bottom / 2.0),
+            t.text_primary);
+        s.text_no_wrap(&date, &f.caption,
+            rect(clock_rect.left, clock_rect.bottom / 2.0, clock_rect.right, clock_rect.bottom),
+            t.text_secondary);
         s.end()
     }
 }
@@ -740,7 +776,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     .is_some_and(|app| app.in_right_area(px))
             });
             if right_area {
-                _ = forward_tray_click(px, true);
+                APP.with(|cell| {
+                    if let Some(app) = cell.borrow().iter().find(|app| app.hwnd == hwnd) {
+                        let (w, h) = app.surface.size();
+                        let dip = px as f32 / app.surface.scale();
+                        let index = ((dip - tray_left(app, w, h)) / (h / 2.0)) as isize - 1;
+                        if index >= 0 && (index as usize) < app.tray_bitmaps.len() {
+                            _ = tray::click(index as usize, false);
+                        }
+                    }
+                });
                 return LRESULT(0);
             }
             let target = APP.with(|cell| {
@@ -805,6 +850,19 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(menu_wndproc),
             ..Default::default()
         });
+        RegisterClassW(&WNDCLASSW {
+            hCursor: LoadCursorW(None, IDC_ARROW)?,
+            hInstance: instance.into(),
+            lpszClassName: w!("fluent-win-toast"),
+            lpfnWndProc: Some(toast_wndproc),
+            ..Default::default()
+        });
+        if std::env::args().any(|arg| arg == "--shell") {
+            // Only when Explorer is not the shell: this window receives the
+            // Shell_NotifyIcon messages instead of Explorer's tray.
+            tray::install(instance.into())?;
+            _ = tray::announce();
+        }
         let mut monitors = Vec::new();
         _ = EnumDisplayMonitors(None, None, Some(each_monitor),
             LPARAM(&mut monitors as *mut Vec<HMONITOR> as isize));
@@ -835,7 +893,7 @@ fn main() -> Result<()> {
                 hwnd, surface, theme, formats, bar, backdrop, _hook: hook,
                 windows: windows.clone(), icons: Vec::new(),
                 icon_cache: icons::IconCache::new(), active: None,
-                tray_strip: None, tray_src: D2D_RECT_F::default(), tray_width: 0.0,
+                tray_bitmaps: Vec::new(), last_balloon: None,
             }));
         }
         with_apps(|apps| {

@@ -31,7 +31,6 @@ pub mod radios;
 pub mod progress;
 pub mod radio_button;
 pub mod scroll_viewer;
-pub mod screen_capture;
 pub mod session;
 pub mod shell_registration;
 pub mod slider;

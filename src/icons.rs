@@ -12,8 +12,12 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_PROPERTIES1, D2D1_INTERPOLATION_MODE_LINEAR, ID2D1Bitmap1,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Gdi::{BITMAP, HBITMAP, DeleteObject, GetObjectW};
+use windows::Win32::Graphics::Gdi::{
+    BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, DeleteObject, GetDIBits,
+    GetObjectW, HBITMAP,
+};
 use windows::Win32::UI::Shell::{IShellItemImageFactory, SIIGBF_ICONONLY, SHCreateItemFromParsingName};
+use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, HICON, ICONINFO};
 use windows::core::{HSTRING, Result};
 
 use crate::gfx::{Surface, rect};
@@ -73,22 +77,17 @@ pub fn from_hbitmap(surface: &Surface, handle: HBITMAP) -> Result<ID2D1Bitmap1> 
     let read = unsafe {
         GetObjectW(handle.into(), size_of::<BITMAP>() as i32, Some(ptr::from_mut(&mut info).cast()))
     };
-    if read == 0 || info.bmBits.is_null() || info.bmBitsPixel != 32 {
+    if read == 0 || info.bmBitsPixel != 32 {
         unsafe { _ = DeleteObject(handle.into()) };
         return Err(windows::Win32::Foundation::E_INVALIDARG.into());
     }
-    let props = D2D1_BITMAP_PROPERTIES1 {
-        pixelFormat: D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        },
-        dpiX: 96.0,
-        dpiY: 96.0,
-        bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
-        colorContext: Default::default(),
-    };
     let width = info.bmWidth.unsigned_abs();
     let height = info.bmHeight.unsigned_abs();
+    // GetIconInfo returns plain compatible bitmaps, which have no bmBits.
+    if info.bmBits.is_null() {
+        return from_gdi_bits(surface, handle, width, height);
+    }
+    let props = bitmap_props();
     let stride = info.bmWidthBytes.unsigned_abs() as usize;
     let source = unsafe {
         std::slice::from_raw_parts(info.bmBits.cast::<u8>(), stride * height as usize)
@@ -101,6 +100,62 @@ pub fn from_hbitmap(surface: &Surface, handle: HBITMAP) -> Result<ID2D1Bitmap1> 
     unsafe {
         surface.ctx().CreateBitmap(D2D_SIZE_U { width, height }, Some(pixels.as_ptr().cast()),
             info.bmWidthBytes.unsigned_abs(), &props)
+    }
+}
+
+/// Wraps the colour bitmap of a real tray HICON.
+pub fn from_hicon(surface: &Surface, icon: HICON) -> Result<ID2D1Bitmap1> {
+    let mut info = ICONINFO::default();
+    unsafe { GetIconInfo(icon, &mut info)?; }
+    let handle = info.hbmColor;
+    if handle.0.is_null() {
+        unsafe { if !info.hbmMask.0.is_null() { _ = DeleteObject(info.hbmMask.into()); } }
+        return Err(windows::Win32::Foundation::E_INVALIDARG.into());
+    }
+    let result = from_hbitmap(surface, handle);
+    unsafe { if !info.hbmMask.0.is_null() { _ = DeleteObject(info.hbmMask.into()); } }
+    result
+}
+
+fn bitmap_props() -> D2D1_BITMAP_PROPERTIES1 {
+    D2D1_BITMAP_PROPERTIES1 {
+        pixelFormat: D2D1_PIXEL_FORMAT {
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        },
+        dpiX: 96.0,
+        dpiY: 96.0,
+        bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+        colorContext: Default::default(),
+    }
+}
+
+/// Reads a compatible HBITMAP (no bmBits) through `GetDIBits` into a DIB.
+fn from_gdi_bits(surface: &Surface, handle: HBITMAP, width: u32, height: u32) -> Result<ID2D1Bitmap1> {
+    let stride = width as usize * 4;
+    let mut pixels = vec![0u8; stride * height as usize];
+    let mut info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width as i32,
+            biHeight: height as i32,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    unsafe {
+        let dc = windows::Win32::Graphics::Gdi::GetDC(None);
+        _ = GetDIBits(dc, handle, 0, height, Some(pixels.as_mut_ptr().cast()), &mut info, DIB_RGB_COLORS);
+        _ = windows::Win32::Graphics::Gdi::ReleaseDC(None, dc);
+        _ = DeleteObject(handle.into());
+    }
+    let rows = copy_rows(&pixels, stride, height, true);
+    unsafe {
+        surface.ctx().CreateBitmap(D2D_SIZE_U { width, height }, Some(rows.as_ptr().cast()),
+            stride as u32, &bitmap_props())
     }
 }
 
