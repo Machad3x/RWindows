@@ -71,7 +71,7 @@ Modo de desenvolvimento **seguro**: o shell roda como um aplicativo comum, com o
 
 ## Fase 4 — Ser o shell de verdade
 
-- [ ] **Registrar como shell**: valor `Shell` em `HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon` (por usuário; o padrão em `HKLM\...\Winlogon\Shell` é `explorer.exe` e fica intocado). O processo inicia com `C:\Windows\System32` como diretório de trabalho. Fonte: respostas da comunidade, não documentação oficial: ❓ confirmar em uma VM.
+- [ ] **Registrar como shell**: implementado em `shell_registration.rs` + `shell_ctl.exe` — só HKCU, valor anterior salvo, uninstall restaura, `install` exige caminho existente e nunca registra a si mesmo. Testado em chaves descartáveis e `status` verificado contra a chave real. ❓ A troca com logoff ainda não foi testada (documentação comunitária, não API oficial); confirmar em VM antes de usar como shell diário.
 - [ ] **Desktop**: papel de parede, ícones da área de trabalho, menu de contexto, arrastar e soltar. ❓ Qual janela hospeda o desktop (classe `Progman`/`WorkerW`) e como usar `IShellView` sem o `explorer.exe`.
 - [ ] **Bandeja completa** (ícones, balões, menus, ocultar/mostrar), compatível com os apps existentes.
 - [ ] **Inicialização de apps**: ❓ quem processa as chaves `Run` e a pasta Startup quando o shell não é o Explorer (a suspeita é que seja o próprio shell, então ele precisa fazer isso).
