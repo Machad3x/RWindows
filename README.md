@@ -457,6 +457,10 @@ A maior parte da RAM é o custo fixo do driver D3D11 carregado no processo. `UIS
 
 `hotkeys::KeyboardHook` instala um hook `WH_KEYBOARD_LL` com `hMod = NULL` (o procedimento fica no próprio executável) e posta `WM_SHORTCUT` para uma janela em vez de trabalhar dentro do callback. Win+E abre o Explorer via `ShellExecuteW` e Win+D enumera janelas visíveis, não minimizadas e sem dono, guardando os HWNDs para restaurar no segundo Win+D. Verificado no Windows 26H2 com `keybd_event`: Win+E criou uma janela do Explorer e Win+D minimizou/restaurou 10 janelas, sem teclas presas. `RegisterHotKey` não serve aqui porque o Explorer já detém Win+E/Win+D. O hook usa 0xE8 como tecla marcadora para o Windows não abrir o Iniciar ao soltar Win (`shortcut:` no código); faltam Win+L, Win+Tab e ambientes de trabalho virtuais.
 
+### Central de notificações
+
+`calendar.rs` calcula dia da semana, dias do mês (incluindo bissextos) e uma grade fixa de 6 semanas sem dependências. `examples/notifications.rs` desenha o mês atual com o dia real destacado e um lugar para notificações; verificado no Windows 26H2 (22 de novembro de 2026 em destaque, igual ao relógio local). A primeira captura revelou que `UNIX_EPOCH` dava o dia UTC — trocado por `GetLocalTime` (`shortcut:` corrigido, não deixado). Limite: a lista de notificações é um espaço reservado. `UserNotificationListener` exige identidade de pacote, que um executável avulso não tem; uma futura versão empacotada pode preenchê-lo. Sem navegação entre meses, UIA própria nem toasts.
+
 ## Verificações não feitas
 
 Quatro caminhos ficaram sem verificação prática nesta máquina, por limites concretos:

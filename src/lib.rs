@@ -13,6 +13,7 @@ pub mod app_bar;
 pub mod app_list;
 pub mod backdrop;
 pub mod button;
+pub mod calendar;
 pub mod check_box;
 pub mod easing;
 pub mod flyout;
