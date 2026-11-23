@@ -9,8 +9,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows, GetMessageW, GetWindow,
-    GetWindowTextW, GW_OWNER, IsIconic, IsWindow, IsWindowVisible, MSG, PostQuitMessage,
-    RegisterClassW, SW_MINIMIZE, SW_RESTORE, ShowWindow, WNDCLASSW, WS_EX_TOOLWINDOW,
+    GW_OWNER, IsIconic, IsWindow, IsWindowVisible, MSG, PostQuitMessage, RegisterClassW,
+    SMTO_ABORTIFHUNG, SMTO_BLOCK, SW_MINIMIZE, SW_RESTORE, SendMessageTimeoutW, ShowWindow,
+    WNDCLASSW, WM_GETTEXT, WS_EX_TOOLWINDOW,
 };
 use windows::core::{Result, w};
 
@@ -36,7 +37,12 @@ extern "system" fn each_window(hwnd: HWND, data: LPARAM) -> windows::core::BOOL 
             return windows::core::BOOL(1);
         }
         let mut title = [0u16; 256];
-        if GetWindowTextW(hwnd, &mut title) == 0 {
+        let mut copied = 0usize;
+        // Same timeout as the taskbar list: a hung app must not freeze the hook.
+        let sent = SendMessageTimeoutW(hwnd, WM_GETTEXT, WPARAM(title.len()),
+            LPARAM(title.as_mut_ptr() as isize), SMTO_ABORTIFHUNG | SMTO_BLOCK, 100,
+            Some(&mut copied));
+        if sent.0 == 0 || copied == 0 {
             return windows::core::BOOL(1);
         }
         let ex = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(

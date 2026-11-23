@@ -67,17 +67,10 @@ pub fn place(target: D2D_RECT_F, width: f32, height: f32, container: D2D_RECT_F,
         .find(|((fits, _), _)| *fits)
         .map(|((_, pos), p)| (pos, p));
     let fits = first.0 || fallback.is_some();
-    let (pos, used) = if first.0 { (first.1, order[0]) } else { fallback.unwrap_or((first.1, order[0])) };
-    // The margin goes only in the direction the flyout appears.
-    let (dx, dy) = match used {
-        Placement::Top => (0.0, -MARGIN),
-        Placement::Bottom => (0.0, MARGIN),
-        Placement::Left => (-MARGIN, 0.0),
-        Placement::Right => (MARGIN, 0.0),
-    };
-    let (mut x, mut y) = (pos.0 + dx, pos.1 + dy);
+    let (mut x, mut y) = if first.0 { first.1 } else { fallback.unwrap_or((first.1, order[0])).0 };
+    let used = if first.0 { order[0] } else { fallback.map(|(_, p)| p).unwrap_or(order[0]) };
     if !fits {
-        // Nothing fit: keep the (clamped) flyout inside the container despite the margin.
+        // Nothing fit: keep the (clamped) flyout inside the container.
         x = x.clamp(container.left, container.right - width);
         y = y.clamp(container.top, container.bottom - height);
     }
@@ -98,15 +91,22 @@ fn try_placement(target: D2D_RECT_F, width: f32, height: f32, container: D2D_REC
 }
 
 /// `TestAgainstLimitsAndPlace`: before or after the anchor, clamped into the limits.
+/// The flyout margin is part of the space it needs on that side.
 fn place_along(start: f32, end: f32, increasing: bool, size: f32, low: f32, high: f32) -> (bool, f32) {
-    let (extra, pos) = if increasing { (high - end - size, end) } else { (start - low - size, start - size) };
+    let need = size + MARGIN;
+    let (extra, pos) = if increasing {
+        (high - end - need, end + MARGIN)
+    } else {
+        (start - low - need, start - MARGIN - size)
+    };
     let pos = if pos < low { low } else if pos + size > high { high - size } else { pos };
     (extra >= 0.0, pos)
 }
 
-/// `TestAndCenterAlignWithinLimits` (Center justification).
+/// `TestAndCenterAlignWithinLimits` (Center justification). A flyout that
+/// exactly fills the axis fits, the same rule `place_along` uses.
 fn center_within(start: f32, end: f32, size: f32, low: f32, high: f32) -> (bool, f32) {
-    if high - low <= size {
+    if high - low < size {
         return (false, low);
     }
     let pos = start + 0.5 * ((end - start) - size);
@@ -274,6 +274,14 @@ mod tests {
     fn right_placement_should_sit_beside_with_the_margin() {
         let (r, p) = place(target(100.0, 400.0), 200.0, 100.0, SCREEN, Placement::Right);
         assert_eq!((r.left, r.top, p), (204.0, 366.0, Placement::Right));
+    }
+
+    #[test]
+    fn the_margin_should_count_when_testing_whether_the_flyout_fits() {
+        // Room for the flyout but not for the gap: must fall back, not overflow.
+        let (r, p) = place(target(400.0, 670.0), 200.0, 96.0, SCREEN, Placement::Bottom);
+        assert_eq!(p, Placement::Top);
+        assert!(r.bottom <= SCREEN.bottom, "{r:?}");
     }
 
     #[test]

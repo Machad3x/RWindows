@@ -2,12 +2,13 @@
 //! used by shell task buttons. `ShellHook` receives the dynamic `SHELLHOOK`
 //! message so the list is refreshed only when windows change.
 
-use windows::Win32::Foundation::{E_FAIL, HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{E_FAIL, HWND, LPARAM, RECT, WPARAM};
 use windows::core::BOOL;
 use windows::Win32::UI::WindowsAndMessaging::{
     DeregisterShellHookWindow, EnumWindows, GWL_EXSTYLE, GetWindow, GetWindowLongPtrW,
-    GetWindowTextW, GW_OWNER, IsWindowVisible, RegisterShellHookWindow, RegisterWindowMessageW,
-    WINDOW_EX_STYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GW_OWNER, IsWindowVisible, RegisterShellHookWindow, RegisterWindowMessageW,
+    SMTO_ABORTIFHUNG, SMTO_BLOCK, SendMessageTimeoutW, WINDOW_EX_STYLE, WM_GETTEXT,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows::core::{Result, w};
 
@@ -64,10 +65,18 @@ extern "system" fn each_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let style = WINDOW_EX_STYLE(unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32);
     if is_task_window(visible, owner, style) {
         let mut title = [0u16; 512];
-        let n = unsafe { GetWindowTextW(hwnd, &mut title) } as usize;
+        let mut copied = 0usize;
+        // A hung app must not freeze the taskbar: WM_GETTEXT is cross-process,
+        // so it gets a short timeout instead of blocking EnumWindows forever.
+        let sent = unsafe {
+            SendMessageTimeoutW(hwnd, WM_GETTEXT, WPARAM(title.len()),
+                LPARAM(title.as_mut_ptr() as isize), SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                100, Some(&mut copied))
+        };
+        let n = if sent.0 == 0 { 0 } else { copied.min(title.len()) };
         list.push(WindowInfo {
             hwnd,
-            title: String::from_utf16_lossy(&title[..n.min(title.len())]),
+            title: String::from_utf16_lossy(&title[..n]),
         });
     }
     BOOL(1)
@@ -87,11 +96,14 @@ pub enum Edge {
     Bottom,
 }
 
-/// Rectangle for `n` evenly spaced buttons of `width` DIPs inside `area`.
+/// Rectangle for `n` evenly spaced buttons of `width` DIPs inside `area`,
+/// stopping at the right edge so no button lands outside the bar.
 pub fn button_rects(area: RECT, n: usize, width: f32, gap: f32) -> Vec<RECT> {
-    (0..n)
+    let pitch = width + gap;
+    let room = ((area.right - area.left) as f32 / pitch).floor().max(0.0) as usize;
+    (0..n.min(room))
         .map(|i| {
-            let x = area.left + (i as f32 * (width + gap)).round() as i32;
+            let x = area.left + (i as f32 * pitch).round() as i32;
             RECT { left: x, top: area.top, right: x + width.round() as i32, bottom: area.bottom }
         })
         .collect()
@@ -118,6 +130,14 @@ mod tests {
         assert_eq!((rects[0].left, rects[0].right), (8, 168));
         assert_eq!((rects[1].left, rects[2].left), (176, 344));
         assert!(rects.iter().all(|r| r.top == 984 && r.bottom == 1032));
+    }
+
+    #[test]
+    fn buttons_should_stop_at_the_right_edge() {
+        let area = RECT { left: 0, top: 0, right: 100, bottom: 48 };
+        let rects = button_rects(area, 10, 48.0, 0.0);
+        assert_eq!(rects.len(), 2);
+        assert!(rects.iter().all(|r| r.right <= area.right));
     }
 
     #[test]
