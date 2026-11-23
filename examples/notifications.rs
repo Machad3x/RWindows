@@ -12,7 +12,7 @@ use fluent_win::theme::{self, Theme};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
 };
 use windows::Win32::Graphics::Gdi::ValidateRect;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -25,6 +25,8 @@ use windows::core::{Result, w};
 
 // Design tokens (DIPs), not screen measurements.
 const W: f32 = 340.0;
+/// Transparent margin around the panel for its drop shadow.
+const SHADOW: f32 = 8.0;
 const PAD: f32 = 12.0;
 const CELL: f32 = 42.0;
 const FOCUS_H: f32 = 28.0;
@@ -54,56 +56,64 @@ struct App {
     formats: Formats,
     /// Centred caption for weekday letters and grid numbers.
     centered: windows::Win32::Graphics::DirectWrite::IDWriteTextFormat,
-    /// Semibold body for headers, as in the real panel.
-    head: windows::Win32::Graphics::DirectWrite::IDWriteTextFormat,
-    /// Semibold caption for pill labels (Foco, Limpar tudo, 30 minutos).
-    pill: windows::Win32::Graphics::DirectWrite::IDWriteTextFormat,
     today: Date,
     cells: Vec<(u32, bool)>,
 }
 
 impl App {
     fn render(&mut self) -> Result<()> {
-        let (w, h) = self.surface.size();
+        let (window_w, window_h) = self.surface.size();
+        let w = window_w - 2.0 * SHADOW;
+        let h = window_h - 2.0 * SHADOW;
+        let r = |l: f32, t: f32, right: f32, bottom: f32| {
+            rect(l + SHADOW, t + SHADOW, right + SHADOW, bottom + SHADOW)
+        };
         let (cal_top, month_top, week_top, grid_top, focus_top) = layout(h);
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
         let symbol = s.icon_format(14.0)?;
         s.begin();
-        s.fill_round(rect(0.0, 0.0, w, h), 8.0, theme::acrylic_tint(t));
-        s.fill_round(rect(0.0, 0.0, w, h), 8.0, t.card);
+        // Soft drop shadow: overlapping low-alpha rounded rects, widest first.
+        for i in 1..=6 {
+            let g = i as f32;
+            s.fill_round(rect(SHADOW - g, SHADOW - g,
+                    window_w - SHADOW + g, window_h - SHADOW + g),
+                8.0 + g, theme::argb(0x0A000000));
+        }
+        s.fill_round(r(0.0, 0.0, w, h), 8.0, theme::acrylic_tint(t));
+        s.fill_round(r(0.0, 0.0, w, h), 8.0, t.card);
 
-        s.text_no_wrap("Notificações", &self.head,
-            rect(PAD, 12.0, w - PAD - 110.0, 44.0), t.text_primary);
+        s.text_no_wrap("Notificações", &f.caption,
+            r(PAD, 12.0, w - PAD - 110.0, 44.0), t.text_primary);
         s.text_no_wrap("\u{E74D}", &symbol,
-            rect(w - 138.0, 16.0, w - 114.0, 40.0), t.text_secondary);
-        s.fill_round(rect(w - 108.0, 16.0, w - PAD, 40.0), 12.0, t.control_alt_fill_secondary);
-        s.text_no_wrap("Limpar tudo", &self.pill,
-            rect(w - 108.0, 16.0, w - PAD, 40.0), t.text_primary);
+            r(w - 138.0, 16.0, w - 114.0, 40.0), t.text_secondary);
+        s.fill_round(r(w - 108.0, 16.0, w - PAD, 40.0), 12.0, t.control_alt_fill_secondary);
+        s.text_no_wrap("Limpar tudo", &f.caption,
+            r(w - 108.0, 16.0, w - PAD, 40.0), t.text_primary);
 
         // Real toasts need a packaged identity; this card keeps the shape and
         // spacing of the real ones without inventing notifications.
-        s.fill_round(rect(PAD, 56.0, w - PAD, 148.0), 6.0, t.control_alt_fill_secondary);
+        s.fill_round(r(PAD, 56.0, w - PAD, 148.0), 6.0, t.control_alt_fill_secondary);
         s.text_no_wrap("\u{E7E7}", &symbol,
-            rect(PAD + 12.0, 72.0, PAD + 44.0, 104.0), t.text_secondary);
+            r(PAD + 12.0, 72.0, PAD + 44.0, 104.0), t.text_secondary);
         s.text_no_wrap("Nenhuma nova notificação", &f.caption,
-            rect(PAD + 48.0, 72.0, w - PAD - 12.0, 96.0), t.text_primary);
+            r(PAD + 48.0, 72.0, w - PAD - 12.0, 96.0), t.text_primary);
         s.text_no_wrap("As notificações dos aplicativos aparecem aqui",
-            &f.caption, rect(PAD + 48.0, 96.0, w - PAD - 12.0, 132.0), t.text_secondary);
+            &f.caption, r(PAD + 48.0, 96.0, w - PAD - 12.0, 132.0), t.text_secondary);
 
-        s.fill_round(rect(0.0, cal_top, w, cal_top + 1.0), 0.0, t.divider);
+        s.fill_round(r(0.0, cal_top, w, cal_top + 1.0), 0.0, t.divider);
         let long_date = calendar::long_date(self.today);
-        s.text_no_wrap(&long_date, &self.head,
-            rect(PAD, cal_top + 8.0, w - PAD - 30.0, cal_top + CAL_HEADER), t.text_primary);
+        s.text_no_wrap(&long_date, &f.caption,
+            r(PAD, cal_top + 8.0, w - PAD - 30.0, cal_top + CAL_HEADER), t.text_primary);
         s.text_no_wrap("\u{E70D}", &symbol,
-            rect(w - 32.0, cal_top + 8.0, w - PAD, cal_top + CAL_HEADER), t.text_secondary);
+            r(w - 32.0, cal_top + 8.0, w - PAD, cal_top + CAL_HEADER), t.text_secondary);
 
         let month_title = calendar::month_year(self.today);
-        s.text_no_wrap(&month_title, &self.head,
-            rect(PAD, month_top, w - PAD, month_top + MONTH_H), t.text_primary);
+        s.text_no_wrap(&month_title, &f.caption,
+            r(PAD, month_top, w - PAD, month_top + MONTH_H), t.text_primary);
         s.text_no_wrap("\u{E70E}", &symbol,
-            rect(w - 62.0, month_top, w - 38.0, month_top + MONTH_H), t.text_secondary);
+            r(w - 62.0, month_top, w - 38.0, month_top + MONTH_H), t.text_secondary);
         s.text_no_wrap("\u{E70D}", &symbol,
-            rect(w - 34.0, month_top, w - PAD, month_top + MONTH_H), t.text_secondary);
+            r(w - 34.0, month_top, w - PAD, month_top + MONTH_H), t.text_secondary);
 
         let cell_w = (w - 2.0 * PAD) / 7.0;
         let first = calendar::first_day_of_week();
@@ -113,7 +123,7 @@ impl App {
             let name = calendar::weekday_name((first + col as u32) % 7);
             let initial: String = name.chars().take(1).flat_map(char::to_uppercase).collect();
             s.text_no_wrap(&initial, &self.centered,
-                rect(left, week_top, left + cell_w, week_top + WEEK_H), t.text_secondary);
+                r(left, week_top, left + cell_w, week_top + WEEK_H), t.text_secondary);
         }
         for (index, (day, in_month)) in self.cells.iter().enumerate() {
             let col = index % 7;
@@ -124,27 +134,27 @@ impl App {
             if today {
                 // Round marker centred on the cell, as in the real calendar.
                 let (cx, cy) = (left + cell_w / 2.0, top + CELL / 2.0);
-                let r = 14.0;
-                s.fill_round(rect(cx - r, cy - r, cx + r, cy + r), r, t.accent);
+                let radius = 14.0;
+                s.fill_round(r(cx - radius, cy - radius, cx + radius, cy + radius), radius, t.accent);
             }
             s.text_no_wrap(&day.to_string(), &self.centered,
-                rect(left, top, left + cell_w, top + CELL),
+                r(left, top, left + cell_w, top + CELL),
                 if *in_month { t.text_primary } else { t.text_secondary });
         }
 
         let pill_h = FOCUS_H;
-        s.fill_round(rect(PAD, focus_top, PAD + 24.0, focus_top + pill_h), 6.0, t.control_alt_fill_secondary);
-        s.text_no_wrap("−", &self.centered, rect(PAD, focus_top, PAD + 24.0, focus_top + pill_h), t.text_primary);
-        s.text_no_wrap("30 minutos", &self.pill,
-            rect(PAD + 32.0, focus_top, PAD + 120.0, focus_top + pill_h), t.text_primary);
-        s.fill_round(rect(PAD + 126.0, focus_top, PAD + 150.0, focus_top + pill_h), 6.0, t.control_alt_fill_secondary);
+        s.fill_round(r(PAD, focus_top, PAD + 24.0, focus_top + pill_h), 6.0, t.control_alt_fill_secondary);
+        s.text_no_wrap("−", &self.centered, r(PAD, focus_top, PAD + 24.0, focus_top + pill_h), t.text_primary);
+        s.text_no_wrap("30 minutos", &f.caption,
+            r(PAD + 32.0, focus_top, PAD + 120.0, focus_top + pill_h), t.text_primary);
+        s.fill_round(r(PAD + 126.0, focus_top, PAD + 150.0, focus_top + pill_h), 6.0, t.control_alt_fill_secondary);
         s.text_no_wrap("+", &self.centered,
-            rect(PAD + 126.0, focus_top, PAD + 150.0, focus_top + pill_h), t.text_primary);
-        s.fill_round(rect(w - 92.0, focus_top, w - PAD, focus_top + pill_h), 6.0, t.control_alt_fill_secondary);
+            r(PAD + 126.0, focus_top, PAD + 150.0, focus_top + pill_h), t.text_primary);
+        s.fill_round(r(w - 92.0, focus_top, w - PAD, focus_top + pill_h), 6.0, t.control_alt_fill_secondary);
         s.text_no_wrap("\u{E768}", &symbol,
-            rect(w - 88.0, focus_top, w - 66.0, focus_top + pill_h), t.text_primary);
-        s.text_no_wrap("Foco", &self.pill,
-            rect(w - 64.0, focus_top, w - PAD - 4.0, focus_top + pill_h), t.text_primary);
+            r(w - 88.0, focus_top, w - 66.0, focus_top + pill_h), t.text_primary);
+        s.text_no_wrap("Foco", &f.caption,
+            r(w - 64.0, focus_top, w - PAD - 4.0, focus_top + pill_h), t.text_primary);
         s.end()
     }
 }
@@ -186,6 +196,8 @@ fn main() -> Result<()> {
         let instance = GetModuleHandleW(None)?;
         let class = w!("fluent-win-notifications");
         RegisterClassW(&WNDCLASSW {
+            // Popup shadow, as the real flyout presenter has.
+            style: windows::Win32::UI::WindowsAndMessaging::CS_DROPSHADOW,
             hCursor: LoadCursorW(None, IDC_ARROW)?,
             hInstance: instance.into(),
             lpszClassName: class,
@@ -197,10 +209,11 @@ fn main() -> Result<()> {
         let work = metrics::work_rect();
         let k = metrics::scale();
         let height = ((work.bottom - work.top) as f32 / k).round() as i32 - 16;
-        let (x, y) = metrics::bottom_right(W, height as f32, 8.0);
+        let (x, y) = metrics::bottom_right(W + 2.0 * SHADOW, height as f32 + 2.0 * SHADOW, 0.0);
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class,
             w!("fluent-win · Notificações"), WS_POPUP | WS_VISIBLE,
-            x, y, (W * k).round() as i32, (height as f32 * k).round() as i32,
+            x, y, ((W + 2.0 * SHADOW) * k).round() as i32,
+            ((height as f32 + 2.0 * SHADOW) * k).round() as i32,
             None, None, Some(instance.into()), None)?;
         let theme = Theme::system();
         _ = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark);
@@ -212,15 +225,10 @@ fn main() -> Result<()> {
             format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             format
         };
-        let head = surface.format(&theme::BODY_STRONG)?;
-        let pill = surface.format(&theme::Ramp {
-            size: 12.0,
-            weight: DWRITE_FONT_WEIGHT_SEMI_BOLD.0 as f32,
-        })?;
         let today = calendar::today();
         let cells = calendar::grid_full(today.year, today.month);
         APP.with(|cell| *cell.borrow_mut() = Some(App {
-            surface, theme, formats, centered, head, pill, today, cells,
+            surface, theme, formats, centered, today, cells,
         }));
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {

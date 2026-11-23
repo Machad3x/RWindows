@@ -15,10 +15,12 @@ use fluent_win::icons;
 use fluent_win::menu_flyout::{Entry, Item, MenuFlyout};
 use fluent_win::metrics;
 use fluent_win::panel::Formats;
-use fluent_win::theme::Theme;
+use fluent_win::screen_capture;
+use fluent_win::theme::{self, Theme};
 use fluent_win::uia::{self, WM_UIA_INVOKE};
 use fluent_win::window_list::{self, ShellHook, WindowInfo};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
@@ -48,7 +50,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowExW, FindWindowW,
+    GetMessageW,
     GetWindowRect, GetWindowThreadProcessId, HSHELL_HIGHBIT, HSHELL_MONITORCHANGED, HSHELL_REDRAW,
     HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, IDC_ARROW, IsIconic,
     IsWindow, KillTimer, LoadCursorW, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
@@ -225,6 +228,11 @@ struct App {
     /// Executable icons, kept across shell events so a redraw does not re-extract.
     icon_cache: icons::IconCache,
     active: Option<HWND>,
+    /// Mirror of Explorer's notification area while Explorer is the shell.
+    tray_strip: Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>,
+    /// Source rectangle of the notification area inside the captured strip.
+    tray_src: D2D_RECT_F,
+    tray_width: f32,
 }
 
 extern "system" fn each_monitor(monitor: HMONITOR, _hdc: HDC, _rect: *mut RECT, data: LPARAM) -> BOOL {
@@ -247,6 +255,15 @@ fn system_taskbar(monitor: HMONITOR) -> Option<RECT> {
         }
         let bar = data.rc;
         (bar.bottom == info.rcMonitor.bottom && bar.top > info.rcMonitor.top).then_some(bar)
+    }
+}
+
+/// Explorer's taskbar and its notification-area window.
+fn tray_windows() -> Option<(HWND, HWND)> {
+    unsafe {
+        let tray = FindWindowW(w!("Shell_TrayWnd"), None).ok()?;
+        let notify = FindWindowExW(Some(tray), None, w!("TrayNotifyWnd"), None).ok()?;
+        Some((tray, notify))
     }
 }
 
@@ -334,7 +351,7 @@ fn button_at(app: &App, x: f32) -> Option<HWND> {
     let (w, h) = app.surface.size();
     let pad = h / 6.0;
     let first = pad + h;
-    let last = clock_left(app, w, h) - h / 6.0;
+    let last = tray_left(app, w, h) - h / 6.0;
     if x < first || x > last {
         return None;
     }
@@ -372,6 +389,12 @@ fn clock_left(app: &App, w: f32, h: f32) -> f32 {
     let (tw, _) = app.surface.measure(&time, &app.formats.caption).unwrap_or((0.0, 0.0));
     let (dw, _) = app.surface.measure(&date, &app.formats.caption).unwrap_or((0.0, 0.0));
     w - tw.max(dw) - h / 3.0 - h / 6.0
+}
+
+/// Start of the right-hand area: the mirrored tray when Explorer is alive,
+/// otherwise the measured clock.
+fn tray_left(app: &App, w: f32, h: f32) -> f32 {
+    if app.tray_strip.is_some() { w - app.tray_width } else { clock_left(app, w, h) }
 }
 
 impl App {
@@ -476,6 +499,40 @@ impl App {
         self.render()
     }
 
+    /// Mirrors Explorer's notification area by copying its pixels; it exposes no
+/// icon toolbar on the current Windows 11, and stealing Shell_NotifyIcon would
+/// break Explorer. A real shell uses the tray module instead.
+fn refresh_tray(&mut self) {
+    let Some((taskbar, notify)) = tray_windows() else {
+        self.tray_strip = None;
+        return;
+    };
+    let Ok(handle) = screen_capture::window_bits(taskbar) else {
+        self.tray_strip = None;
+        return;
+    };
+    match icons::from_hbitmap(&self.surface, handle) {
+        Ok(bitmap) => {
+            let outer = unsafe {
+                let mut r = RECT::default();
+                _ = GetWindowRect(taskbar, &mut r);
+                r
+            };
+            let inner = unsafe {
+                let mut r = RECT::default();
+                _ = GetWindowRect(notify, &mut r);
+                r
+            };
+            let k = self.surface.scale();
+            self.tray_src = rect((inner.left - outer.left) as f32, (inner.top - outer.top) as f32,
+                (inner.right - outer.left) as f32, (inner.bottom - outer.top) as f32);
+            self.tray_width = (inner.right - inner.left) as f32 / k;
+            self.tray_strip = Some(bitmap);
+        }
+        Err(_) => self.tray_strip = None,
+    }
+}
+
     /// Rebuilds the task-button list from all top-level windows.
     fn refresh_windows(&mut self) {
         let surface = &self.surface;
@@ -508,6 +565,7 @@ impl App {
         let icons: Vec<_> = list.iter().map(|info| window_icon(surface, cache, info.hwnd)).collect();
         self.icons = icons;
         self.windows = list;
+        self.refresh_tray();
         self.render()
     }
 
@@ -533,6 +591,7 @@ impl App {
         let (w, h) = self.surface.size();
         let style = flyout::style(&self.theme, self.backdrop);
         let clock_left = clock_left(self, w, h);
+        let tray_left = tray_left(self, w, h);
         let (time, date) = locale_text();
         let buttons: Vec<(String, bool, Option<windows::Win32::Graphics::Direct2D::ID2D1Bitmap1>)> =
             self.windows.iter().enumerate()
@@ -540,6 +599,9 @@ impl App {
                 .collect();
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
         s.begin();
+        // Same acrylic tint as the flyout panels: DWM's transient backdrop
+        // alone is too light over a bright wallpaper, and the real bar is dark.
+        s.fill_round(rect(0.0, 0.0, w, h), 0.0, theme::acrylic_tint(t));
         s.with_opacity(1.0, |s| {
             flyout::draw_chrome(s, &style, (w, h));
             Ok(())
@@ -567,7 +629,7 @@ impl App {
                     pane / 5.0, t.accent);
             }
         }
-        let task_area = rect(pad + h, 0.0, clock_left - pad, h);
+        let task_area = rect(pad + h, 0.0, tray_left - pad, h);
         s.with_clip(task_area, |s| {
             for (i, (_title, active, icon_bitmap)) in buttons.iter().enumerate() {
                 let x = pad + h + i as f32 * h;
@@ -581,14 +643,26 @@ impl App {
                 }
             }
         });
-        // Windows 11 stacks time over date, right aligned.
-        let clock_rect = rect(clock_left, 0.0, w - pad, h);
-        s.text_no_wrap(&time, &f.caption,
-            rect(clock_rect.left, clock_rect.top, clock_rect.right, clock_rect.bottom / 2.0),
-            t.text_primary);
-        s.text_no_wrap(&date, &f.caption,
-            rect(clock_rect.left, clock_rect.bottom / 2.0, clock_rect.right, clock_rect.bottom),
-            t.text_secondary);
+        if let Some(strip) = &self.tray_strip {
+            // The real pixels, so icons, labels and clock match exactly while
+            // Explorer is the shell. Crop to its notification-area window.
+            let dest = rect(tray_left, 0.0, w, h);
+            let src = self.tray_src;
+            unsafe {
+                s.ctx().DrawBitmap(strip, Some(&dest), 1.0,
+                    windows::Win32::Graphics::Direct2D::D2D1_INTERPOLATION_MODE_LINEAR,
+                    Some(&src), None);
+            }
+        } else {
+            // Windows 11 stacks time over date, right aligned.
+            let clock_rect = rect(clock_left, 0.0, w - pad, h);
+            s.text_no_wrap(&time, &f.caption,
+                rect(clock_rect.left, clock_rect.top, clock_rect.right, clock_rect.bottom / 2.0),
+                t.text_primary);
+            s.text_no_wrap(&date, &f.caption,
+                rect(clock_rect.left, clock_rect.bottom / 2.0, clock_rect.right, clock_rect.bottom),
+                t.text_secondary);
+        }
         s.end()
     }
 }
@@ -618,7 +692,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             LRESULT(0)
         }
-        WM_TIMER if wp.0 == CLOCK_TIMER => with_app_at(hwnd, App::render),
+        WM_TIMER if wp.0 == CLOCK_TIMER => with_app_at(hwnd, |app| {
+            app.refresh_tray();
+            app.render()
+        }),
         WM_DESTROY => unsafe {
             close_menu();
             _ = KillTimer(Some(hwnd), CLOCK_TIMER);
@@ -696,11 +773,13 @@ fn main() -> Result<()> {
                 hwnd, surface, theme, formats, bar, backdrop, _hook: hook,
                 windows: windows.clone(), icons: Vec::new(),
                 icon_cache: icons::IconCache::new(), active: None,
+                tray_strip: None, tray_src: D2D_RECT_F::default(), tray_width: 0.0,
             }));
         }
         with_apps(|apps| {
             for app in apps.iter_mut() {
                 app.refresh_windows();
+                app.refresh_tray();
                 app.reposition()?;
                 _ = SetTimer(Some(app.hwnd), CLOCK_TIMER, Duration::from_secs(1).as_millis() as u32, None);
             }
