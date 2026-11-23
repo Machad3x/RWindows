@@ -8,11 +8,12 @@ use std::cell::RefCell;
 use fluent_win::backdrop;
 use fluent_win::button::Input;
 use fluent_win::gfx::{Surface, rect};
+use fluent_win::metrics;
 use fluent_win::panel::Formats;
 use fluent_win::quick_settings::{self, Volume};
 use fluent_win::radios::{self, Radios, RadioInfo};
 use fluent_win::slider::Slider;
-use fluent_win::theme::Theme;
+use fluent_win::theme::{self, Theme};
 use windows::Devices::Radios::RadioKind;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND};
@@ -47,10 +48,11 @@ const SCROLL_PAUSE: u32 = 45;
 const SCROLL_STEP: f32 = 0.25;
 
 // Glyphs from the official Segoe Fluent Icons 1.56 table (Microsoft Learn).
-// X offset of each glyph's *ink* centre inside its tile, measured on the real
-// flyout. Centring the text box is not enough: the symbol font has asymmetric
-// side bearings, so each glyph needs its own correction.
-const GLYPH_X: [f32; 6] = [28.0, 28.0, 65.0, 52.0, 59.0, 65.0];
+// X position of each glyph's ink centre inside its tile. Wi-Fi and Bluetooth
+// sit left of a separator (the chevron lives in the right part); the other
+// tiles are centred and have no chevron at all, as in the real flyout.
+const GLYPH_X: [f32; 6] = [27.0, 27.0, 47.0, 47.0, 47.0, 47.0];
+const HAS_SEPARATOR: [bool; 6] = [true, true, false, false, false, false];
 const TILES: [(&str, &str); 6] = [
     ("\u{E701}", "Disponível"),    // Wifi
     ("\u{E702}", "Não conectado"), // Bluetooth
@@ -101,18 +103,9 @@ impl App {
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
         let symbol = s.icon_format(18.0)?;
         s.begin();
-        // Real flyout renders as dark gray (33..44 on this desktop); the WinUI
-        // control-fill token composites much lighter over our host window.
-        let base = if t.dark {
-            windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                r: 38.0 / 255.0, g: 38.0 / 255.0, b: 38.0 / 255.0, a: 1.0,
-            }
-        } else {
-            windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                r: 243.0 / 255.0, g: 243.0 / 255.0, b: 243.0 / 255.0, a: 1.0,
-            }
-        };
-        s.fill_round(rect(0.0, 0.0, w, h), 8.0, base);
+        // WinUI card token: follows the user's theme and DWM backdrop. The
+        // exact gray depends on the wallpaper behind the window, like Acrylic.
+        s.fill_round(rect(0.0, 0.0, w, h), 8.0, t.card);
         for index in 0..6 {
             let col = index % 3;
             let row = index / 3;
@@ -121,15 +114,20 @@ impl App {
             let r = rect(left, top, left + TILE_W, top + TILE_H);
             s.fill_round(r, 6.0, if self.tiles[index].on { t.accent } else { t.control_alt_fill_secondary });
             // The symbol font has asymmetric side bearings: centre the ink,
-            // not the text box, using the offsets measured on the real flyout.
+            // not the text box.
             let glyph_left = left + GLYPH_X[index] - 15.0;
             s.text_no_wrap(TILES[index].0, &symbol,
                 rect(glyph_left, top + 10.0, glyph_left + 30.0, top + 42.0),
                 if self.tiles[index].on { t.text_on_accent } else { t.text_primary });
-            let small = s.icon_format(12.0)?;
-            s.text_no_wrap("\u{E76C}", &small,
-                rect(left + TILE_W - 18.0, top + 12.0, left + TILE_W - 4.0, top + 40.0),
-                if self.tiles[index].on { t.text_on_accent } else { t.text_secondary });
+            if HAS_SEPARATOR[index] {
+                // Thin divider between the icon area and the chevron area.
+                s.fill_round(rect(left + 54.0, top + 12.0, left + 55.0, top + 46.0),
+                    0.0, theme::with_opacity(t.text_primary, 0.35));
+                let small = s.icon_format(12.0)?;
+                s.text_no_wrap("\u{E76C}", &small,
+                    rect(left + 66.0, top + 12.0, left + 84.0, top + 40.0),
+                    if self.tiles[index].on { t.text_on_accent } else { t.text_secondary });
+            }
             let label = TILES[index].1;
             let label_rect = rect(left, top + TILE_H + 2.0,
                 left + TILE_W, top + TILE_H + 18.0);
@@ -348,10 +346,19 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(wndproc),
             ..Default::default()
         });
-        // Real flyout sits at the bottom-right of the primary monitor.
+        // Bottom-right of the work area, above whatever the taskbar is.
+        let (x, y) = metrics::bottom_right(WIDTH, HEIGHT, 16.0);
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class,
             w!("fluent-win · Configurações rápidas"), WS_POPUP | WS_VISIBLE,
-            2211, 826, WIDTH as i32, HEIGHT as i32, None, None, Some(instance.into()), None)?;
+            x, y, WIDTH as i32, HEIGHT as i32, None, None, Some(instance.into()), None)?;
+        // A real flyout takes focus when it opens; without this the launching
+        // shell immediately takes it back and our WM_ACTIVATE handler closes us.
+        _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(hwnd,
+            Some(windows::Win32::UI::WindowsAndMessaging::HWND_TOPMOST), 0, 0, 0, 0,
+            windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
+                | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE
+                | windows::Win32::UI::WindowsAndMessaging::SWP_SHOWWINDOW);
+        _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
         let theme = Theme::system();
         _ = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark);
         let surface = Surface::new(hwnd)?;

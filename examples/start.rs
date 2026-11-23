@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use fluent_win::app_list::{self, AppInfo, Category};
 use fluent_win::backdrop;
 use fluent_win::gfx::{Surface, rect};
+use fluent_win::metrics;
 use fluent_win::panel::Formats;
 use fluent_win::session::{self, PowerAction};
 use fluent_win::text_box::TextBox;
@@ -135,18 +136,8 @@ impl App {
         let (w, h) = self.surface.size();
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
         s.begin();
-        // Real Start renders as a near-solid gray on this desktop; the WinUI
-        // card token is only a 5% white overlay and left a visible color tint.
-        let base = if t.dark {
-            windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                r: 40.0 / 255.0, g: 40.0 / 255.0, b: 40.0 / 255.0, a: 1.0,
-            }
-        } else {
-            windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                r: 243.0 / 255.0, g: 243.0 / 255.0, b: 243.0 / 255.0, a: 1.0,
-            }
-        };
-        s.fill_round(rect(0.0, 0.0, w, h), 8.0, base);
+        // Card token composites over the DWM backdrop and follows the theme.
+        s.fill_round(rect(0.0, 0.0, w, h), 8.0, t.card);
         self.search.draw(s, t, f, rect(SEARCH.0, SEARCH.1, SEARCH.2, SEARCH.3), false)?;
 
         s.text_no_wrap("Fixado", &f.body,
@@ -327,8 +318,9 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(wndproc),
             ..Default::default()
         });
+        let (x, y) = metrics::centered_bottom(WIDTH, HEIGHT);
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Iniciar"),
-            WS_POPUP | WS_VISIBLE, 12, 307, WIDTH as i32, HEIGHT as i32,
+            WS_POPUP | WS_VISIBLE, x, y, WIDTH as i32, HEIGHT as i32,
             None, None, Some(instance.into()), None)?;
         let theme = Theme::system();
         _ = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark);

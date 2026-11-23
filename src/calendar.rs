@@ -1,7 +1,9 @@
 //! Calendar grid for the notification center. Pure date math, no crate.
 //! Weekdays follow Windows: Sunday = 0.
 
+use windows::Win32::Globalization::{GetLocaleInfoEx, LOCALE_SABBREVDAYNAME1, LOCALE_SMONTHNAME1};
 use windows::Win32::System::SystemInformation::GetLocalTime;
+use windows::core::PCWSTR;
 
 /// A civil date in the Gregorian calendar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +74,28 @@ pub fn grid(year: i32, month: u32) -> Vec<Option<u32>> {
     cells.extend((1..=days as u32).map(Some));
     cells.resize(42, None);
     cells
+}
+
+/// Full month name in the user's locale (1..=12).
+pub fn month_name(month: u32) -> String {
+    if !(1..=12).contains(&month) {
+        return String::new();
+    }
+    let mut buffer = [0u16; 64];
+    unsafe {
+        GetLocaleInfoEx(PCWSTR::null(), LOCALE_SMONTHNAME1 + month - 1, Some(&mut buffer));
+    }
+    String::from_utf16_lossy(&buffer).trim_end_matches('\0').to_owned()
+}
+
+/// Abbreviated weekday in the user's locale, Sunday = 0.
+pub fn weekday_name(weekday: u32) -> String {
+    let constant = if weekday == 0 { LOCALE_SABBREVDAYNAME1 + 6 } else { LOCALE_SABBREVDAYNAME1 + weekday - 1 };
+    let mut buffer = [0u16; 16];
+    unsafe {
+        GetLocaleInfoEx(PCWSTR::null(), constant, Some(&mut buffer));
+    }
+    String::from_utf16_lossy(&buffer).trim_end_matches('\0').to_owned()
 }
 
 #[cfg(test)]

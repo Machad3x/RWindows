@@ -5,6 +5,7 @@
 use fluent_win::backdrop;
 use fluent_win::calendar::{self, Date};
 use fluent_win::gfx::{Surface, rect};
+use fluent_win::metrics;
 use fluent_win::panel::Formats;
 use fluent_win::theme::Theme;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -21,11 +22,6 @@ use windows::core::{Result, w};
 const W: f32 = 360.0;
 const H: f32 = 472.0;
 const PAD: f32 = 16.0;
-const MONTHS: [&str; 12] = [
-    "janeiro", "fevereiro", "março", "abril", "maio", "junho",
-    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
-];
-
 struct App {
     surface: Surface,
     theme: Theme,
@@ -40,13 +36,14 @@ impl App {
         let (s, t, f) = (&mut self.surface, &self.theme, &self.formats);
         s.begin();
         s.fill_round(rect(0.0, 0.0, w, h), 8.0, t.card);
-        let title = format!("{} de {} de {}", self.today.day, MONTHS[self.today.month as usize - 1], self.today.year);
+        let title = format!("{} de {} de {}", self.today.day,
+            calendar::month_name(self.today.month), self.today.year);
         s.text_no_wrap(&title, &f.body, rect(PAD, 14.0, w - PAD, 48.0), t.text_primary);
-        let weekdays = ["D", "S", "T", "Q", "Q", "S", "S"];
         let cell_w = (w - 2.0 * PAD) / 7.0;
-        for (col, name) in weekdays.iter().enumerate() {
+        for col in 0..7 {
             let left = PAD + col as f32 * cell_w;
-            s.text_no_wrap(name, &f.caption, rect(left, 56.0, left + cell_w, 80.0), t.text_secondary);
+            let name = calendar::weekday_name(col);
+            s.text_no_wrap(&name, &f.caption, rect(left, 56.0, left + cell_w, 80.0), t.text_secondary);
         }
         for (index, day) in self.cells.iter().enumerate() {
             let Some(day) = day else { continue };
@@ -110,9 +107,10 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(wndproc),
             ..Default::default()
         });
+        let (x, y) = metrics::bottom_right(W, H, 16.0);
         let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class,
             w!("fluent-win · Notificações"), WS_POPUP | WS_VISIBLE,
-            200, 120, W as i32, H as i32, None, None, Some(instance.into()), None)?;
+            x, y, W as i32, H as i32, None, None, Some(instance.into()), None)?;
         let theme = Theme::system();
         _ = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark);
         let surface = Surface::new(hwnd)?;

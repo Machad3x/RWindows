@@ -16,6 +16,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMSBT_MAINWINDOW, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::ValidateRect;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetProcessDpiAwarenessContext,
 };
@@ -31,6 +32,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{Result, w};
+
+/// Icon source from the actual system directory, not a hardcoded C: path.
+fn notepad_path() -> String {
+    let mut buffer = [0u16; 260];
+    let length = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;
+    let directory = String::from_utf16_lossy(&buffer[..length]);
+    format!("{directory}\\notepad.exe")
+}
 
 const PAD: f32 = 32.0;
 const GAP: f32 = 12.0;
@@ -82,7 +91,7 @@ impl App {
         let generation = self.surface.generation();
         if generation != self.icon_gen {
             let mut cache = IconCache::new();
-            if let Ok(icon) = cache.get(&self.surface, r"C:\Windows\System32\notepad.exe", 32) {
+            if let Ok(icon) = cache.get(&self.surface, &notepad_path(), 32) {
                 self.icon = Some(icon.clone());
                 self.icon_gen = generation;
             }
@@ -265,7 +274,7 @@ fn main() -> Result<()> {
         let mut text = TextBox::new("");
         text.placeholder = "Digite algo...".to_owned();
         let mut icons = IconCache::new();
-        let icon = icons.get(&surface, r"C:\Windows\System32\notepad.exe", 32).ok().cloned();
+        let icon = icons.get(&surface, &notepad_path(), 32).ok().cloned();
         APP.with(|cell| {
             *cell.borrow_mut() = Some(App { surface, theme, formats, radios, bar, ring, text, icon, icon_gen: 0, pending_surrogate: None, time: 0.0, blink: true })
         });

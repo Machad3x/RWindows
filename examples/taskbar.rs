@@ -13,6 +13,7 @@ use fluent_win::flyout;
 use fluent_win::gfx::{Surface, rect};
 use fluent_win::icons;
 use fluent_win::menu_flyout::{Entry, Item, MenuFlyout};
+use fluent_win::metrics;
 use fluent_win::panel::Formats;
 use fluent_win::theme::Theme;
 use fluent_win::uia::{self, WM_UIA_INVOKE};
@@ -59,6 +60,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, Result, w};
 
 const APPBAR_CALLBACK: u32 = WM_APP + 0x60;
+/// Width of one task button in DIPs, measured from the real taskbar.
+const BUTTON_WIDTH: f32 = 48.0;
 const CLOCK_TIMER: usize = 1;
 /// `HSHELL_FLASH` is `HSHELL_REDRAW` with the high bit set (winuser.h).
 const HSHELL_FLASH: u32 = HSHELL_REDRAW | HSHELL_HIGHBIT;
@@ -311,7 +314,7 @@ fn window_icon(surface: &Surface, hwnd: HWND) -> Option<windows::Win32::Graphics
 
 /// Window under a task-button x coordinate (DIPs from the bar's left edge).
 fn button_at(app: &App, x: f32) -> Option<HWND> {
-    let width = 48.0;
+    let width = BUTTON_WIDTH;
     let index = ((x - 8.0) / width) as isize;
     if index < 0 || x - 8.0 - index as f32 * width > width {
         return None;
@@ -384,12 +387,16 @@ impl App {
     /// Re-query the work area and place the bar; also called on ABN_POSCHANGED.
     fn reposition(&mut self) -> Result<()> {
         let k = self.surface.scale();
-        let height = (app_bar::HEIGHT * k).round() as i32;
-        let work = unsafe {
+        let (work, strip) = unsafe {
             let monitor = MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST);
             let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
             _ = GetMonitorInfoW(monitor, &mut info);
-            info.rcWork
+            (info.rcWork, info.rcMonitor.bottom - info.rcWork.bottom)
+        };
+        let height = if strip > 0 {
+            (strip as f32 / k).round() as i32
+        } else {
+            (app_bar::HEIGHT * k).round() as i32
         };
         // SHAppBarMessage(ABM_SETPOS) shrinks the work area, which sends us
         // ABN_POSCHANGED. Once our top edge sits at the new work bottom we are
@@ -475,7 +482,7 @@ impl App {
         }
         // Measured on the real Windows 11 bar: 48-DIP slots with a 24-DIP
         // centred icon, no title, and a short indicator under the active one.
-        let button_width = 48.0;
+        let button_width = BUTTON_WIDTH;
         let task_area = rect(8.0, 0.0, w - 260.0, h);
         s.with_clip(task_area, |s| {
             for (i, (_title, active, icon)) in buttons.iter().enumerate() {
@@ -583,10 +590,13 @@ fn main() -> Result<()> {
             _ = GetDpiForMonitor(*monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
             let k = dx as f32 / 96.0;
             let width = info.rcMonitor.right - info.rcMonitor.left;
+            // Height from the work area, not a fixed 48: follows DPI and the
+            // user's taskbar settings.
+            let bar_h = ((info.rcMonitor.bottom - info.rcWork.bottom) as f32 / k).round() as i32;
+            let bar_h = if bar_h > 0 { bar_h } else { metrics::taskbar_height_dip().round() as i32 };
             let hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, class, w!("fluent-win · Taskbar"),
-                WS_POPUP | WS_VISIBLE, info.rcWork.left, info.rcWork.bottom - (app_bar::HEIGHT * k).round() as i32,
-                width, (app_bar::HEIGHT * k).round() as i32,
-                None, None, Some(instance.into()), None)?;
+                WS_POPUP | WS_VISIBLE, info.rcWork.left, info.rcWork.bottom - bar_h,
+                width, bar_h, None, None, Some(instance.into()), None)?;
             let backdrop = backdrop::apply(hwnd, DWMSBT_TRANSIENTWINDOW, DWMWCP_ROUND, theme.dark).is_ok();
             let surface = Surface::new(hwnd)?;
             let formats = Formats::new(&surface)?;

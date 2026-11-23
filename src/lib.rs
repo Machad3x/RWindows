@@ -24,6 +24,7 @@ pub mod icons;
 pub mod layout;
 pub mod list_view;
 pub mod menu_flyout;
+pub mod metrics;
 pub mod panel;
 pub mod quick_settings;
 pub mod radios;
